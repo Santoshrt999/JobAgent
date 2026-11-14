@@ -2,6 +2,8 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { docxToPdfViaChromium, pdfEngine } from './chromiumPdf.js';
+import { resumeHtml } from './tailorRunner.js';
 import {
   pythonExe, pythonSpawnOptions, pythonTimeoutMs, killProcessTree,
 } from './pythonEnv.js';
@@ -15,7 +17,7 @@ function lastJsonLine(text) {
  * Convert a generated tailored DOCX to a sibling PDF. Existing PDFs are reused.
  * The caller is responsible for validating that both paths are workspace-local.
  */
-export function ensureResumePdf(docxPath, {
+function officeResumePdf(docxPath, {
   spawnImpl = spawn, env = process.env, timeoutMs = pythonTimeoutMs({ exportPdf: true, baseMs: 15_000 }),
   platform = process.platform, killImpl, root,
 } = {}) {
@@ -79,4 +81,30 @@ export function ensureResumePdf(docxPath, {
       finish({ exported: false, pdfPath: null, reason: `preview request failed: ${err.message}` });
     }
   });
+}
+
+/**
+ * A PDF for a tailored DOCX (the dashboard's preview and download).
+ * RESUME_PDF_ENGINE (see chromiumPdf.js): `auto` tries Word/LibreOffice and
+ * falls back to Chromium, so a preview exists on every machine; `chromium`
+ * uses Chromium only; `office` never uses it. A caller that injects its own
+ * process spawner (tests) keeps the converter-only behaviour unless it also
+ * passes `chromiumFallback: true`.
+ */
+export async function ensureResumePdf(docxPath, options = {}) {
+  const engine = pdfEngine(options.env ?? process.env);
+  const viaChromium = () => docxToPdfViaChromium({
+    docxPath,
+    toHtml: (p) => (options.resumeHtmlFn ?? resumeHtml)(p, { root: options.root, deps: { env: options.env } }),
+    deps: { chromium: options.chromium },
+  });
+  if (engine === 'chromium') {
+    if (!docxPath || !existsSync(docxPath)) return { exported: false, pdfPath: null, reason: 'tailored DOCX was not found' };
+    return viaChromium();
+  }
+  const office = await officeResumePdf(docxPath, options);
+  const fallback = options.chromiumFallback ?? !options.spawnImpl;
+  if (office.exported || engine === 'office' || !fallback || !docxPath || !existsSync(docxPath)) return office;
+  const chromium = await viaChromium();
+  return chromium.exported ? chromium : { ...office, reason: `${office.reason}; Chromium: ${chromium.reason}` };
 }

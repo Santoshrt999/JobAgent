@@ -30,7 +30,8 @@
  * never included in a request.
  */
 
-import { completeJson, llmSettings } from './client.js';
+import { llmSettings } from './client.js';
+import { runTask, SYSTEM_UNTRUSTED_RULE, untrusted } from './task.js';
 
 /** Most requirement phrases to accept from one posting. */
 const MAX_REQUIREMENTS = 40;
@@ -52,9 +53,47 @@ const SYSTEM_PROMPT = [
   '   equal-opportunity text, or recruiting-fraud warnings.',
   '5. Output at most 40 items.',
   '',
+  '6. ' + SYSTEM_UNTRUSTED_RULE,
+  '',
   'Respond with JSON only, in exactly this shape:',
   '{"requirements":[{"phrase":"<verbatim text>","importance":"required|preferred|unclassified"}]}',
 ].join('\n');
+
+/**
+ * The task, versioned (P1-1). Bump the version whenever the prompt or schema
+ * changes: it is part of the cache key and of every result's provenance.
+ * The schema is deliberately lenient (a bare string item, any importance
+ * word): the grounding check below is what decides what is accepted.
+ */
+export const JD_REQUIREMENTS_TASK = Object.freeze({
+  name: 'jd-requirements',
+  version: 2,
+  system: SYSTEM_PROMPT,
+  maxTokens: 1600,
+  effort: 'low',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['requirements'],
+    properties: {
+      requirements: {
+        type: 'array',
+        items: {
+          anyOf: [
+            { type: 'string' },
+            {
+              type: 'object',
+              additionalProperties: false,
+              required: ['phrase', 'importance'],
+              properties: { phrase: { type: 'string' }, importance: { type: 'string' } },
+            },
+          ],
+        },
+      },
+    },
+  },
+  buildUser: ({ title, jd }) => `JOB TITLE: ${String(title ?? '').slice(0, 200)}\n\n${untrusted('job_posting', jd)}`,
+});
 
 /**
  * Normalize for the grounding comparison: lowercase, collapse whitespace, and
@@ -120,13 +159,9 @@ export async function extractJdRequirements({
   // A stub JD cannot yield trustworthy requirements and is not worth a call.
   if (jd.length < 200) return empty('job description too short to analyze', true);
 
-  const result = await completeJson({
-    system: SYSTEM_PROMPT,
-    user: `JOB TITLE: ${String(title ?? '').slice(0, 200)}\n\nJOB DESCRIPTION:\n${jd}`,
-    settings,
-  }, deps);
-
+  const result = await runTask(JD_REQUIREMENTS_TASK, { title, jd }, { settings, deps });
   if (!result.ok) return empty(result.error ?? 'extraction failed', true);
+  result.model = result.provenance.model;
 
   const raw = Array.isArray(result.data?.requirements) ? result.data.requirements : null;
   if (!raw) return empty('response did not contain a requirements array', true);
@@ -179,6 +214,8 @@ export async function extractJdRequirements({
       source: 'llm-jd-requirements',
       enabled: true,
       model: result.model,
+      task: result.provenance.task,
+      provider: result.provenance.provider,
       cached: result.cached,
       skipped: null,
       verified: accepted.length,

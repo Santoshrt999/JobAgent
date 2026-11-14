@@ -26,6 +26,27 @@ describe('detectBlocker', () => {
     expect(v.kind).toBe('login');
   });
 
+  // Measured 2026-11-13: Oracle Recruiting's Apply goes to .../apply/email, an
+  // "Authentication screen" that asks for an email before the form exists. Its
+  // wording ("You don't need to have an account") matches no login phrase, so the
+  // run carried on and tried to fill a page with no application form on it.
+  it('stops at Oracle Recruiting\'s email step, which comes before the application form', () => {
+    const url = 'https://example.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/12345/apply/email';
+    const v = detectBlocker({ html: "Authentication screen. You don't need to have an account. Email Address", url });
+    expect(v.blocked).toBe(true);
+    expect(v.kind).toBe('login');
+    expect(v.reason).toMatch(/Oracle/);
+    expect(v.reason).toMatch(/email/i);
+    expect(detectBlocker({ html: 'x', url: `${url}?lang=en` }).blocked).toBe(true);
+  });
+
+  it('does not stop on Oracle\'s posting page or on the form steps after the email step', () => {
+    const base = 'https://example.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/12345';
+    for (const url of [base, `${base}/apply/section/1`, `${base}/apply/emailed-me`]) {
+      expect(detectBlocker({ html: 'Lead Software Engineer. Apply Now', url }).blocked).toBe(false);
+    }
+  });
+
   it('does not mistake /author-like paths for a /auth login redirect', () => {
     expect(detectBlocker({ html: 'welcome', url: 'https://jobs.example.com/authors-program' }).blocked).toBe(false);
     expect(detectBlocker({ html: 'welcome', url: 'https://example.com/careers/authorized-roles' }).blocked).toBe(false);

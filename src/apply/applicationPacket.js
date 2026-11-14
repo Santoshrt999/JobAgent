@@ -291,6 +291,10 @@ export function buildApplicationPacket({
     atsReport: atsReport ?? null,
     coverLetterPath: coverLetterPath ?? null,
     coverLetterGenerated: Boolean(coverLetter?.generated),
+    // The same letter as a .docx, and how it was written: from the template,
+    // or grounded paragraph by paragraph in the resume (P1-3).
+    coverLetterDocxPath: coverLetter?.docxPath ?? null,
+    coverLetterGrounding: coverLetter?.generated ? (coverLetter.grounding ?? { mode: 'template' }) : null,
     ats,
     prefill,
     uploads,

@@ -32,7 +32,8 @@
  * On auto-submit, precisely (this file used to say "there is no auto-submit
  * path", which contradicted both the README and the code):
  *
- *   - No CLI command can submit. `runAssist` hardcodes autoSubmit: false.
+ *   - No CLI command can submit. `runAssist` forces autoSubmit: false whatever
+ *     options it is given, and no CLI path passes any.
  *   - ONE path can submit: POST /api/auto-submit-batch on the local dashboard,
  *     which requires an explicit per-run authorization (`confirmed: true`), a
  *     fresh server-side eligibility check, zero blockers, a truthful-sponsorship
@@ -199,15 +200,26 @@ export function helpText() {
   return `${lines.join('\n')}\n`;
 }
 
-/** Parse `--key=value` / `--flag` / positional args into an object. */
+/**
+ * Options that always take a value, so `--port 4747` means the same as
+ * `--port=4747`. Without this the space form became a flag plus a stray
+ * positional, and the dashboard silently started on 4646 instead.
+ */
+const VALUE_OPTIONS = new Set(['port', 'mode']);
+
+/** Parse `--key=value` / `--key value` (VALUE_OPTIONS) / `--flag` / positional args into an object. */
 export function parseArgs(argv = []) {
   const out = { flags: new Set(), options: {}, positionals: [] };
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
     if (arg.startsWith('--')) {
       const body = arg.slice(2);
       const eq = body.indexOf('=');
-      if (eq === -1) out.flags.add(body);
-      else out.options[body.slice(0, eq)] = body.slice(eq + 1);
+      if (eq !== -1) out.options[body.slice(0, eq)] = body.slice(eq + 1);
+      else if (VALUE_OPTIONS.has(body) && i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+        out.options[body] = argv[i + 1];
+        i += 1;
+      } else out.flags.add(body);
     } else {
       out.positionals.push(arg);
     }
@@ -369,7 +381,18 @@ async function runCommand(command, parsed, env) {
         }
         const { startDashboard, installProcessSafetyNet } = await import('./dashboard/server.js');
         const port = parseDashboardPort(parsed.options.port ?? env.DASHBOARD_PORT, 4646);
+        // One dashboard per install: two servers cache config and the database
+        // separately, so a profile switch in one leaves the other serving the
+        // previous person's jobs against the new person's files (BUG-03).
+        const { readLiveLock, writeLock } = await import('./dashboard/instanceLock.js');
+        const holder = readLiveLock(config.root);
+        if (holder) {
+          ui.warn(`JobAgent is already running for this folder at http://127.0.0.1:${holder.port} (process ${holder.pid}).`);
+          ui.note('Use that one, or stop it (Ctrl+C in its window) before starting another.');
+          return { command, ok: false, alreadyRunning: true, port: holder.port };
+        }
         const dash = await startDashboard({ config, db, logger, port });
+        const releaseLock = writeLock(config.root, { port: dash.port ?? port });
         let uninstallSafetyNet = () => {};
         let onSignal = null;
         let bodyError = null;
@@ -380,6 +403,7 @@ async function runCommand(command, parsed, env) {
           uninstallSafetyNet = installProcessSafetyNet({ runState: dash.runState, logger });
           ui.heading('JobAgent Dashboard');
           ui.success(`Running at ${ui.c.bold(dash.url)}  (local-only, never exposed)`);
+          if (dash.apiToken) ui.note(`Open this link to unlock it in your browser: ${dash.unlockUrl}`);
           ui.note('Discover, score, review, approve, and auto-apply from the browser.');
           ui.note('By default it stops before Submit; auto-submit only runs when you explicitly opt in per run.');
           ui.blank();
@@ -402,6 +426,7 @@ async function runCommand(command, parsed, env) {
           let cleanupError = null;
           try { await dash.close(); } catch (err) { cleanupError ??= err; }
           try { uninstallSafetyNet(); } catch (err) { cleanupError ??= err; }
+          try { releaseLock(); } catch { /* a stale lock is ignored once its pid is gone */ }
           // eslint-disable-next-line no-unsafe-finally -- deliberate: only when the body succeeded
           if (!bodyError && cleanupError) throw cleanupError;
         }
@@ -583,7 +608,13 @@ async function runCommand(command, parsed, env) {
   } finally {
     runLock?.release();
     db.close();
+    // The PDF printer shares one browser across a batch; never leave it running.
+    await closeSharedPdfBrowser();
   }
+}
+
+async function closeSharedPdfBrowser() {
+  try { const { closePdfBrowsers } = await import('./resume/chromiumPdf.js'); await closePdfBrowsers(); } catch { /* nothing to close */ }
 }
 
 /** Legacy `--mode=` / `--report` behavior. */
@@ -636,6 +667,7 @@ async function runLegacyMode(parsed, env) {
     return { mode, ...result };
   } finally {
     db.close();
+    await closeSharedPdfBrowser();
   }
 }
 

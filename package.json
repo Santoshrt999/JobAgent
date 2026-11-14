@@ -1,6 +1,6 @@
 {
   "name": "job-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Local-first automated job search, resume tailoring, and human-approved application assistant.",
@@ -14,6 +14,7 @@
     "go": "node src/index.js go",
     "dashboard": "node src/index.js dashboard",
     "ui": "node src/index.js dashboard",
+    "dashboard:link": "node scripts/dashboardLink.mjs",
     "doctor": "node src/index.js doctor",
     "profiles": "node src/index.js profiles",
     "preflight": "node src/index.js doctor",
@@ -42,15 +43,23 @@
     "verify": "node scripts/verifyRepoHealth.js",
     "lint": "node scripts/lint.mjs",
     "typecheck": "tsc -p jsconfig.json",
+    "licenses": "node scripts/licenseInventory.mjs",
     "scoring:init": "node scripts/initScoring.mjs",
+    "scoring:calibrate": "node scripts/calibrateScoring.mjs",
     "db:maintenance": "node scripts/dbMaintenance.mjs",
     "db:prune": "node scripts/dbMaintenance.mjs --prune-descriptions=60",
     "db:prune:apply": "node scripts/dbMaintenance.mjs --prune-descriptions=60 --apply --vacuum",
+    "backup": "node scripts/backupNow.mjs",
+    "export": "node scripts/exportData.mjs",
+    "import": "node scripts/importData.mjs",
+    "secret": "node scripts/secret.mjs",
+    "mcp": "node scripts/mcpServer.mjs",
     "postings:check": "node scripts/checkPostings.mjs",
     "postings:prune": "node scripts/checkPostings.mjs --apply --limit=5000",
     "setup": "node scripts/setupLocalConfig.mjs",
     "setup:check": "node scripts/setupLocalConfig.mjs --check",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "test:py": "python -m pytest",
     "enrich": "node scripts/enrichDescriptions.mjs"
@@ -58,20 +67,26 @@
   "dependencies": {
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
-    "dotenv": "^17.4.2",
-    "pino": "^10.3.1",
-    "playwright": "~1.56.1"
+    "dotenv": "^18.0.10",
+    "pino": "^10.4.0",
+    "playwright": "~1.65.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^22.20.4",
+    "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^4.1.12",
+    "axe-core": "^4.14.0",
     "eslint": "^10.11.0",
-    "globals": "^17.12.0",
+    "globals": "^17.14.0",
     "typescript": "~5.9.3",
     "vitest": "^4.1.11"
   },
   "license": "MIT",
   "overrides": {
     "minimatch": "^11.0.7"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "@modelcontextprotocol/sdk": "^1.32.2"
   }
 }

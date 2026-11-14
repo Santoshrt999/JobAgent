@@ -85,4 +85,30 @@ describe('uploads against real markup', () => {
     expect(await attached(page)).toEqual({ cl: null, cv: 'sample_resume.txt' });
     await page.close();
   }, 30_000);
+
+  // Measured 2026-11-13 (Oracle Recruiting): the email step's ONLY file input is the
+  // chat assistant's hidden "Attachment" button. With nothing saying what it was
+  // for, the "only file input on the page" rule put the resume in it; the widget
+  // cleared it and the run reported "upload did not remain attached".
+  it('never offers a chat assistant\'s attachment input as a resume slot', async () => {
+    const page = await browser.newPage();
+    await page.setContent(`<main><h1>Authentication screen</h1></main>
+      <div class="oda-chat-footer"><div class="oda-chat-footer-actions">
+        <button>Attachment</button><input id="chat-file" type="file" style="display:none"></div></div>`);
+    const up = await uploadFiles(page, generic.prepare({ uploads: { uploads: [{ type: 'resume', path: RESUME }] } }));
+    expect(await attached(page)).toEqual({ 'chat-file': null });
+    expect(up.uploaded).toEqual([]);
+    expect(up.blockers.join(' ')).toMatch(/resume/);
+    await page.close();
+  }, 30_000);
+
+  it('still uses the real resume slot when a chat widget sits beside it', async () => {
+    const page = await browser.newPage();
+    await page.setContent(`<form><label for="cv">Resume</label><input id="cv" type="file"></form>
+      <div class="oda-chat-footer"><input id="chat-file" type="file"></div>`);
+    const up = await uploadFiles(page, generic.prepare({ uploads: { uploads: [{ type: 'resume', path: RESUME }] } }));
+    expect(up.blockers).toEqual([]);
+    expect(await attached(page)).toEqual({ cv: 'sample_resume.txt', 'chat-file': null });
+    await page.close();
+  }, 30_000);
 });

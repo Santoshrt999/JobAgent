@@ -8,6 +8,7 @@
  * past a CAPTCHA, login, MFA, or bot wall.
  */
 
+import { waitForSettledPage } from './navigator.js';
 import { detectBlocker } from './guards.js';
 
 /**
@@ -123,7 +124,7 @@ export async function createBrowserSession({
  * @param {number} [options.timeoutMs=30000]
  * @returns {Promise<{ status: number|null, html: string, guard: object }>}
  */
-export async function openApplicationPage(page, url, { timeoutMs = 30000 } = {}) {
+export async function openApplicationPage(page, url, { timeoutMs = 30000, settleMs = 12000 } = {}) {
   let status = null;
   let html = '';
   try {
@@ -133,6 +134,9 @@ export async function openApplicationPage(page, url, { timeoutMs = 30000 } = {})
     // Navigation failure is itself a stop condition; surface as a bot-like block.
     return { status, html, guard: { blocked: true, kind: 'navigation', reason: err.message, signals: [] } };
   }
+  // `domcontentloaded` is an empty shell on single-page ATSes; read the page
+  // only once it has drawn its controls (bounded — see waitForSettledPage).
+  await waitForSettledPage(page, { timeoutMs: settleMs });
   try {
     html = await page.content();
   } catch { /* ignore — guard will treat empty html conservatively */ }

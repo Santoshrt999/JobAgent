@@ -1,0 +1,629 @@
+/* Hallmark · macrostructure: bespoke "Signal" · tone: launch film, wayfinding · tokens and full stamp: tokens.css */
+/*
+ * Explore JobAgent: the Overview.
+ *
+ * The Overview reads like a launch film. A headline over a morning of
+ * postings, the problem in the reader's own words, then five chapter sheets
+ * the example posting passes through. Each sheet has its own ground (tokens.css,
+ * Grounds); the two human gates are red sheets with a black signal head. In a
+ * wide window the sheets hold and peel over one another (motion.js); anywhere
+ * else they are ordinary sections, one after another.
+ *
+ * Every rule here describes the FINISHED page. Holding a sheet is a layout
+ * that motion.js asks for (html[data-motion="pinned"]) only in a window wide
+ * and tall enough, and only when the reader has not asked for reduced motion.
+ * Colours, faces and sizes are tokens. Controls are pills; surfaces have a 4px
+ * corner, sheets a large one.
+ *
+ * Contents
+ *   1. Type roles and the page        7. Never
+ *   2. Hero                           8. Under the hood, sources
+ *   3. The problem                    9. Run the line, register, close
+ *   4. Sheets and their chrome       10. The chapter rail
+ *   5. The two signals               11. Held sheets (pinned)
+ *   6. The five pictures             12. Motion, narrow screens
+ */
+
+/* ───────────────────────── 1. type roles ───────────────────────── */
+
+:root { --stage-h: calc(100dvh - var(--top-h)); }
+
+/* The serif carries every statement; Archivo carries signage, data and controls. */
+.ex-big, .ex-hero-title, .ex-say, .ex-scene-claim, .ex-gate-title, .ex-never-word, .ex-never-rule, .ex-close-title, .ex-contrast-who, .ex-score-num, .ex-fcard-num {
+  font-family: var(--font-serif); font-weight: 400; font-style: normal; font-stretch: 100%;
+  font-synthesis: none; text-wrap: balance;
+}
+.ex-big { font-size: clamp(2.5rem, 1rem + 4vw, 5.4rem); line-height: .96; letter-spacing: -.022em; max-width: 15ch; }
+.ex-overview .ex-lede { font-size: clamp(1.0625rem, .95rem + .35vw, 1.25rem); }
+
+/* Sections that are not sheets sit on the page's own ground and keep its rhythm. */
+.ex-overview > .ex-chapter:not(.ex-sheet-chapter, .ex-never) { padding-block: clamp(4.5rem, 3rem + 5vw, 8rem); }
+
+/* ───────────────────────── 2. hero ───────────────────────── */
+
+.ex-overview > .ex-hero {
+  min-height: min(calc(100svh - var(--top-h)), 64rem);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: "title field" "foot field" "proof field";
+  column-gap: var(--space-2xl); row-gap: var(--space-lg);
+  padding-block: clamp(1.5rem, 6vh, 4.5rem) var(--space-xl);
+}
+.ex-hero-title {
+  grid-area: title; align-self: end; font-size: clamp(3.4rem, .4rem + 8.6vw, 10.5rem); line-height: .84; letter-spacing: -.03em;
+  text-wrap: nowrap;
+}
+.ex-hero-title .ex-line { display: block; }
+.ex-hero-call { color: var(--signal-ink); }
+.ex-hero-title .ex-lamp { width: .15em; height: .15em; margin-left: .04em; }
+.ex-hero-foot { grid-area: foot; align-self: end; display: grid; gap: var(--space-lg); justify-items: start; }
+.ex-hero-foot .ex-lede { max-width: 40ch; color: var(--color-ink-2); }
+.ex-hero-proof {
+  grid-area: proof; display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-lg);
+  padding-top: var(--space-md); border-top: var(--rule-hair) solid var(--color-rule);
+  font-size: var(--text-sm); font-weight: 600; font-stretch: var(--wdth-sign); color: var(--color-ink-2);
+}
+.ex-hero-proof li { display: inline-flex; align-items: center; gap: .55em; }
+.ex-hero-proof li::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--line-find); }
+.ex-hero-proof li:last-child::before { background: var(--signal); }
+
+/* The field: one morning of postings, standing in depth. */
+.ex-crowd { grid-area: field; position: relative; min-height: clamp(20rem, 60vh, 40rem); margin-right: calc(-1 * var(--page-pad)); perspective: 1300px; perspective-origin: 40% 45%; }
+.ex-crowd-space { position: absolute; inset: 0; transform-style: preserve-3d; transform: rotateX(6deg) rotateY(-14deg); }
+.ex-fcard {
+  position: absolute; left: var(--x); top: calc(var(--y) * .78); width: clamp(9.5rem, 13vw, 12.5rem);
+  display: grid; gap: 2px; padding: .8rem .95rem;
+  background: var(--color-sheet); border: var(--rule-hair) solid var(--color-rule); border-radius: 10px;
+  box-shadow: var(--shadow-lift); font-size: var(--text-xs); line-height: 1.35;
+  transform: translateZ(var(--z)) rotateY(var(--r)); filter: blur(var(--blur, 0));
+  backface-visibility: hidden;
+}
+.ex-fcard-src { font-weight: 720; font-stretch: var(--wdth-sign); color: var(--line-find-ink); }
+.ex-fcard-title { font-weight: 700; font-size: var(--text-sm); color: var(--color-ink); line-height: 1.2; }
+.ex-fcard-co { color: var(--color-ink-2); }
+.ex-fcard-bars { display: grid; gap: 4px; margin-top: .45rem; }
+.ex-fcard-bars span { height: 4px; border-radius: 2px; background: var(--color-paper-3); }
+.ex-fcard-bars span:nth-child(2) { width: 72%; }
+.ex-fcard-bars span:nth-child(3) { width: 46%; }
+.ex-fcard.is-ours {
+  z-index: 2; filter: none; width: clamp(13rem, 19vw, 17.5rem); padding: 1.15rem 1.3rem 1.2rem; gap: 3px;
+  border: 1.5px solid var(--line-find); border-top-width: 6px; border-radius: 12px;
+  box-shadow: 0 2px 0 oklch(0% 0 0 / .04), 0 40px 70px -28px oklch(15% .05 260 / .55);
+}
+.ex-fcard.is-ours .ex-fcard-title { font-size: var(--text-lg); font-weight: 760; letter-spacing: -.01em; }
+.ex-fcard.is-ours .ex-fcard-co { font-size: var(--text-sm); color: var(--color-ink-2); }
+.ex-fcard-score { display: flex; align-items: center; gap: var(--space-xs); margin-top: var(--space-xs); }
+.ex-fcard-num { font-size: clamp(3.4rem, 2rem + 2.6vw, 4.6rem); line-height: .8; letter-spacing: -.03em; color: var(--color-ink); font-variant-numeric: tabular-nums; }
+
+/* ───────────────────────── 3. the problem ───────────────────────── */
+
+.ex-overview > .ex-problem { display: grid; gap: var(--space-xl); padding-top: var(--space-3xl); }
+.ex-say { font-size: clamp(2.4rem, .8rem + 5vw, 6.6rem); line-height: .98; letter-spacing: -.024em; max-width: 21ch; text-wrap: pretty; }
+.ex-say-line { display: block; }
+.ex-say-turn { color: var(--signal-ink); max-width: 19ch; justify-self: end; text-align: right; }
+.ex-contrast { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-xl); margin-top: var(--space-2xl); }
+.ex-contrast li {
+  display: grid; align-content: start; gap: var(--space-xs);
+  padding-top: var(--space-md); border-top: var(--rule-hair) solid var(--color-rule-strong); color: var(--color-ink-2);
+}
+.ex-contrast-n { display: none; }
+.ex-contrast-who { font-size: clamp(1.7rem, 1.1rem + 1.4vw, 2.6rem); line-height: 1; letter-spacing: -.015em; color: var(--color-ink); }
+.ex-contrast-what { font-size: var(--text-lg); line-height: 1.45; text-wrap: pretty; }
+.ex-contrast .is-ours { border-top: 3px solid var(--signal); color: var(--color-ink); }
+.ex-contrast .is-ours .ex-contrast-who { color: var(--signal-ink); }
+.ex-contrast .is-ours .ex-contrast-what { font-weight: 600; }
+.ex-problem-who { color: var(--color-ink-2); max-width: 56ch; }
+
+/* ───────────────────────── 4. sheets ───────────────────────── */
+
+/*
+ * A sheet runs the full width of the window and carries its ground. Its
+ * content lines up with the page column. Without motion the sheets simply
+ * follow one another, each tucked a corner's depth under the next.
+ */
+.ex-sheet-chapter { position: relative; }
+.ex-sheet-chapter + .ex-sheet-chapter { margin-top: calc(-1 * var(--radius-sheet)); }
+.ex-plate, .ex-overview > .ex-never {
+  position: relative; margin-inline: calc(50% - 50vw);
+  padding-inline: max(var(--page-pad), calc(50vw - var(--page-max) / 2 + var(--page-pad)));
+  background: var(--color-paper); color: var(--color-ink);
+  border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
+  box-shadow: 0 -24px 48px -28px oklch(0% 0 0 / .5);
+}
+.ex-plate { padding-block: var(--space-md) calc(var(--space-3xl) + var(--radius-sheet)); }
+.ex-shade { position: absolute; inset: 0; z-index: 6; border-radius: inherit; background: oklch(6% 0.02 265); opacity: 0; pointer-events: none; }
+
+/* The sheet's corner: which chapter this is, and the one fact it proves. */
+.ex-chrome {
+  display: flex; align-items: center; gap: var(--space-xs) var(--space-md); flex-wrap: wrap;
+  padding-block: var(--space-sm); border-bottom: var(--rule-hair) solid var(--color-rule);
+  font-size: var(--text-sm); font-stretch: var(--wdth-sign); color: var(--color-ink-2);
+}
+.ex-scene-name { display: inline-flex; align-items: center; gap: .6em; font-size: var(--text-md); font-weight: 720; font-stretch: var(--wdth-text); color: var(--color-ink); letter-spacing: 0; }
+.ex-scene-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--line); box-shadow: 0 0 0 4px color-mix(in oklab, var(--line) 26%, transparent); }
+.ex-chrome-at { font-variant-numeric: tabular-nums; font-weight: 640; }
+.ex-chrome-n { color: var(--color-ink); }
+.ex-chrome-fact { margin-left: auto; font-weight: 640; color: var(--line-ink); }
+
+.ex-scene-inner {
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "pic" "notes";
+  gap: var(--space-xl); padding-top: var(--space-2xl);
+}
+.ex-scene-head { grid-area: head; display: grid; gap: var(--space-md); align-content: start; }
+.ex-scene-notes { grid-area: notes; display: grid; gap: var(--space-md); justify-items: start; align-content: end; }
+.ex-scene-pic { grid-area: pic; min-width: 0; }
+.ex-scene-rail { display: none; }
+.ex-scene-claim { font-size: clamp(2.3rem, 1rem + 3.2vw, 4.6rem); line-height: .96; letter-spacing: -.022em; max-width: 13ch; color: var(--color-ink); }
+.ex-scene-body { color: var(--color-ink-2); max-width: 44ch; font-size: var(--text-lg); line-height: 1.5; text-wrap: pretty; }
+
+/* The beats: the moments of the chapter, in the order the picture plays them. */
+.ex-beats { display: grid; width: 100%; }
+.ex-beat {
+  display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: var(--space-3xs) var(--space-sm); align-items: baseline;
+  padding: var(--space-xs) 0; border-top: var(--rule-hair) solid var(--color-rule-strong); font-size: var(--text-sm); line-height: 1.45;
+}
+.ex-beat:last-child { border-bottom: var(--rule-hair) solid var(--color-rule-strong); }
+.ex-beat-name { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); font-weight: 720; }
+.ex-beat-n { font-size: var(--text-xs); font-weight: 650; color: var(--color-ink-3); font-variant-numeric: tabular-nums; min-width: 1.4em; }
+.ex-beat-text { color: var(--color-ink-2); }
+.ex-yours { font-size: var(--text-sm); line-height: 1.45; color: var(--color-ink-2); max-width: 46ch; }
+.ex-yours-label { margin-right: .6em; font-weight: 760; color: var(--line-ink); }
+.ex-scene-notes .ex-more { margin-top: 0; }
+.ex-plate .ex-more { text-decoration-color: color-mix(in oklab, var(--color-ink) 40%, transparent); }
+
+/* ───────────────────────── 5. the two signals ───────────────────────── */
+
+.ex-gate-inner {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "title head" "track track" "text text";
+  gap: var(--space-lg) var(--space-2xl); align-items: end; padding-top: var(--space-2xl);
+}
+.ex-gate-title { grid-area: title; font-size: clamp(3.6rem, .8rem + 9.4vw, 11.5rem); line-height: .84; letter-spacing: -.03em; text-wrap: nowrap; }
+.ex-gate-title .ex-w { display: inline-block; }
+/* The signal head: a black housing, danger lit, clear dark. */
+.ex-gate-head {
+  grid-area: head; display: grid; gap: 14%; justify-items: center; align-content: center;
+  width: clamp(4.75rem, 7vw, 7.25rem); aspect-ratio: 1 / 2.15; padding: 14% 0;
+  background: var(--signal-head); border-radius: var(--radius-pill);
+  box-shadow: inset 0 -6px 0 oklch(0% 0 0 / .4), 0 30px 60px -24px oklch(10% 0.05 29 / .6);
+}
+.ex-gate-lamp { width: 64%; aspect-ratio: 1; border-radius: 50%; background: var(--lamp-off); }
+.ex-gate-lamp.is-stop { background: var(--lamp-stop); box-shadow: 0 0 0 4px oklch(0% 0 0 / .35), 0 0 34px 8px color-mix(in oklab, var(--lamp-stop) 70%, transparent); }
+.ex-gate-track { --at: 72%; grid-area: track; position: relative; height: 4.75rem; }
+.ex-gate-rail { position: absolute; left: 0; top: 62%; width: var(--at); height: 8px; margin-top: -4px; border-radius: 4px; background: var(--color-ink); transform-origin: left center; }
+.ex-gate-ahead { position: absolute; left: var(--at); right: 0; top: 62%; margin-top: -1.5px; border-top: 3px dashed color-mix(in oklab, var(--color-ink) 45%, transparent); }
+.ex-gate-stopline { position: absolute; left: var(--at); top: 62%; width: 6px; height: 3.25rem; margin: -1.625rem 0 0 -3px; border-radius: 3px; background: var(--color-ink); }
+.ex-gate-token {
+  position: absolute; left: calc(var(--at) - 4.5rem); top: 62%; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+  border-radius: 50%; background: var(--color-sheet); box-shadow: 0 0 0 5px var(--color-ink);
+}
+.ex-gate-tag {
+  position: absolute; left: 50%; bottom: calc(100% + 14px); transform: translateX(-50%); white-space: nowrap;
+  padding: .32em .85em; border-radius: var(--radius-pill); background: var(--color-ink); color: var(--color-paper);
+  font-size: var(--text-xs); font-weight: 720; font-stretch: var(--wdth-sign);
+}
+.ex-gate-text { grid-area: text; font-size: clamp(1.15rem, .9rem + .7vw, 1.6rem); line-height: 1.35; max-width: 40ch; color: var(--color-ink); text-wrap: pretty; }
+
+/* ───────────────────────── 6. the five pictures ───────────────────────── */
+
+.ex-demo-cap { color: var(--color-ink-3); }
+
+/* Discover: postings as cards on the board. */
+.ex-feeders { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: var(--space-md); font-size: var(--text-xs); }
+.ex-feeders-label { margin-right: var(--space-2xs); font-weight: 720; color: var(--color-ink); }
+.ex-feeder { padding: .26em .8em; border: var(--rule-hair) solid var(--color-rule-strong); border-radius: var(--radius-pill); color: var(--color-ink-2); font-stretch: var(--wdth-sign); font-weight: 620; white-space: nowrap; }
+.ex-feeder-more { color: var(--color-ink); text-decoration: underline; text-decoration-color: var(--color-ink-3); }
+.ex-plane-wrap { perspective: 1300px; }
+.ex-board .ex-board-rows { display: grid; gap: 8px; padding: 0; background: none; box-shadow: none; color: var(--color-ink); transform-style: preserve-3d; }
+.ex-board .ex-board-row, .ex-board-copy {
+  grid-template-columns: 6.5rem minmax(0, 1fr) minmax(0, 12.5rem);
+  padding: .95rem 1.25rem; background: var(--color-sheet);
+  border: var(--rule-hair) solid var(--color-rule); border-radius: 10px;
+}
+.ex-board .ex-board-row { position: relative; }
+.ex-board .ex-board-kept { border-color: var(--line-apply); box-shadow: 0 0 0 1px var(--line-apply), 0 24px 40px -24px color-mix(in oklab, var(--line-apply) 50%, transparent); }
+.ex-board-src { color: var(--line-ink); }
+.ex-board-meta { color: var(--color-ink-3); }
+.ex-board-out { color: var(--color-ink-3); }
+.ex-board-kept .ex-board-out { color: var(--line-apply-ink); }
+.ex-board-merged .ex-board-out { color: var(--line-find-ink); }
+.ex-board-held .ex-board-out { color: var(--signal-ink); }
+.ex-board-row:not(.ex-board-kept) .ex-board-title { color: var(--color-ink-2); }
+/* The extra copies of the merged role exist only while it plays. */
+.ex-board-copy { position: absolute; inset: -1px; display: grid; gap: var(--space-sm); align-items: baseline; visibility: hidden; opacity: 0; }
+
+/* Score: the posting's words, the number, and the points behind it. */
+.ex-scorecard { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-lg); }
+.ex-posting { padding: var(--space-md); background: var(--color-sheet); border: var(--rule-hair) solid var(--color-rule); border-top: var(--rule-line) solid var(--line-find); border-radius: var(--radius-surface); font-size: var(--text-sm); line-height: 1.5; box-shadow: var(--shadow-lift); }
+.ex-posting-title { font-weight: 760; font-size: var(--text-md); line-height: 1.25; }
+.ex-posting-co { color: var(--color-ink-2); }
+.ex-posting-text { display: grid; gap: var(--space-2xs); margin-top: var(--space-xs); color: var(--color-ink-2); }
+.ex-posting-label { display: block; font-size: var(--text-xs); font-weight: 720; font-stretch: var(--wdth-sign); color: var(--color-ink-3); }
+.ex-posting-other { margin-top: var(--space-xs); font-weight: 680; color: var(--color-ink); }
+.ex-posting-other:empty { display: none; }
+.ex-scorecard:not([data-preset="good"]) .ex-posting-text { display: none; }
+/* A skill of yours found in the posting: marked where it stands. */
+.ex-hit {
+  --hit: 1; padding: 0 .12em; font-weight: 720; border-radius: 2px;
+  color: color-mix(in oklab, var(--line-find-ink) calc(var(--hit) * 100%), var(--color-ink-2));
+  background: linear-gradient(var(--tint-find), var(--tint-find)) no-repeat 0 50% / calc(var(--hit) * 100%) 100%;
+}
+.ex-score-main { display: grid; gap: var(--space-sm); align-content: start; }
+.ex-score-figure { display: flex; align-items: flex-end; gap: var(--space-md); flex-wrap: wrap; }
+.ex-scorecard .ex-score-num { font-size: clamp(7rem, 3rem + 8vw, 12.5rem); line-height: .78; letter-spacing: -.04em; color: var(--color-ink); font-weight: 400; font-stretch: 100%; }
+.ex-score-side { display: grid; gap: var(--space-xs); justify-items: start; padding-bottom: .6rem; }
+.ex-score-ruler { margin-top: var(--space-sm); }
+.ex-score-note { min-height: 0; font-size: var(--text-sm); }
+.ex-meaning { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3xs) var(--space-xs); padding-top: var(--space-xs); border-top: var(--rule-hair) dashed var(--color-rule-strong); font-size: var(--text-sm); }
+.ex-meaning-name { font-weight: 720; }
+.ex-meaning-note { flex: 1 1 100%; color: var(--color-ink-2); font-size: var(--text-xs); }
+.ex-scorecard .ex-bars { grid-template-columns: minmax(0, 1fr); gap: 0; margin-top: 0; }
+.ex-scorecard .ex-bar { grid-template-columns: minmax(0, 8.5rem) minmax(0, 1fr) 4.4rem; padding: .26rem 0; }
+.ex-scorecard .ex-ruler-mark { box-shadow: 0 0 0 3px var(--color-paper); }
+/* How far the scene has played scales each bar and the marker; at rest it is 1. */
+.ex-bar-fill { transform: scaleX(calc(var(--v, 0) * var(--reveal, 1))); }
+.ex-ruler-mark { transform: translateX(calc(var(--at) * var(--reveal, 1) * 1cqw)); }
+.ex-scorecard[data-scrub] :is(.ex-bar-fill, .ex-ruler-mark) { transition: none; }
+.ex-score-presets { display: grid; gap: var(--space-2xs); }
+.ex-score-presets-label { font-size: var(--text-xs); font-weight: 720; color: var(--color-ink-3); font-stretch: var(--wdth-sign); }
+@media (min-width: 760px) {
+  .ex-scorecard {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "main posting" "main bars" "meaning bars" "presets presets" "cap cap";
+    column-gap: var(--space-xl); row-gap: var(--space-md);
+  }
+  .ex-posting { grid-area: posting; }
+  .ex-score-main { grid-area: main; }
+  .ex-scorecard .ex-bars { grid-area: bars; }
+  .ex-meaning { grid-area: meaning; align-self: end; }
+  .ex-score-presets { grid-area: presets; }
+  .ex-scorecard .ex-demo-cap { grid-area: cap; margin-top: 0; }
+}
+
+/* Tailor: what the posting asks for, and two sheets of the same paper. */
+.ex-wanted { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: var(--space-md); font-size: var(--text-sm); }
+.ex-wanted-label { margin-right: var(--space-2xs); font-weight: 720; }
+.ex-want {
+  --found: 1; --gap: 0; padding: .22em .85em; border-radius: var(--radius-pill); background: var(--color-sheet); font-weight: 680;
+  border: 1.5px solid color-mix(in oklab, var(--line-apply) calc(var(--found) * 100%), var(--color-rule-strong));
+  color: color-mix(in oklab, var(--line-apply-ink) calc(var(--found) * 100%), var(--color-ink-2));
+}
+.ex-want.is-gap {
+  --found: 0; --gap: 1; border-style: dashed;
+  border-color: color-mix(in oklab, var(--signal) calc(var(--gap) * 100%), var(--color-rule-strong));
+  color: color-mix(in oklab, var(--signal-ink) calc(var(--gap) * 100%), var(--color-ink-2));
+}
+.ex-spread .ex-sheets { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: var(--space-md); }
+.ex-sheet { border-radius: 10px; }
+.ex-sheet-master { box-shadow: var(--shadow-lift); }
+.ex-sheet-tailored { box-shadow: 0 0 0 1px var(--line-apply), var(--shadow-lift); }
+.ex-sheet-tab { display: flex; align-items: center; justify-content: space-between; gap: var(--space-xs); }
+.ex-sheet-lock { display: inline-flex; align-items: center; gap: .3em; font-size: var(--text-xs); font-weight: 620; }
+/* A bullet is a strip of the sheet's own paper. While it moves it is lifted off
+   the sheet (motion.js sets --lift), so it passes over its neighbours. */
+.ex-sheet-bullet {
+  --lift: 0; background-color: var(--color-sheet);
+  box-shadow: 0 calc(var(--lift) * 16px) calc(var(--lift) * 30px) calc(var(--lift) * -10px) oklch(0% 0 0 / .5);
+  scale: calc(1 + var(--lift) * .035);
+}
+/* Emphasis arrives with the scene: at rest a term the posting asks for is bold and marked. */
+.ex-kw {
+  --kw: 1; font-weight: calc(400 + 360 * var(--kw));
+  color: color-mix(in oklab, var(--line-apply-ink) calc(var(--kw) * 100%), var(--color-ink-2));
+  background: linear-gradient(var(--tint-apply), var(--tint-apply)) no-repeat 0 60% / calc(var(--kw) * 100%) 70%;
+}
+
+/* Fill: the form in the browser window JobAgent opens. */
+.ex-formfig { perspective: 1500px; }
+.ex-window { background: var(--color-sheet); border: var(--rule-hair) solid var(--color-rule-strong); border-radius: 10px; box-shadow: var(--shadow-lift); overflow: clip; transform-origin: 50% 100%; }
+.ex-window-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-3xs) var(--space-md); padding: var(--space-xs) var(--space-lg); border-bottom: var(--rule-hair) solid var(--color-rule); background: var(--color-paper-2); font-size: var(--text-xs); color: var(--color-ink-2); }
+.ex-window-url { font-weight: 680; color: var(--color-ink); }
+.ex-formfig .ex-window .ex-form { position: relative; border: 0; border-radius: 0; overflow: clip; }
+.ex-scanline {
+  position: absolute; left: 0; right: 0; top: 0; z-index: 1; height: 64px; margin-top: -64px; pointer-events: none; visibility: hidden;
+  background: linear-gradient(to bottom, transparent, color-mix(in oklab, var(--line-apply) 24%, transparent)); border-bottom: 2px solid var(--line-apply);
+}
+.ex-field { --lit: 1; }
+.ex-field-box { border-color: color-mix(in oklab, var(--line-apply) calc(var(--lit) * 100%), var(--color-rule-strong)); gap: var(--space-xs); background: var(--color-sheet); }
+.ex-field-tag { display: grid; justify-items: end; text-align: right; }
+.ex-field-tag > * { grid-area: 1 / 1; }
+.ex-field-kind { visibility: hidden; font-size: var(--text-xs); font-stretch: var(--wdth-sign); font-weight: 680; color: var(--line-find-ink); white-space: nowrap; }
+.ex-field-value { flex: 1 1 auto; min-width: 0; }
+.ex-field-ok { display: inline-grid; flex: none; margin-left: auto; color: var(--line-apply-ink); }
+
+/* Track: the stages an application moves through, and its history. */
+.ex-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-xs); margin-bottom: var(--space-lg); }
+.ex-stage { --on: 1; display: grid; gap: var(--space-xs); align-content: start; min-height: 9rem; padding-top: var(--space-xs); border-top: var(--rule-line) solid var(--color-rule-strong); }
+.ex-stage.is-past { border-top-color: var(--line-track); }
+.ex-stage.is-current { border-top-color: color-mix(in oklab, var(--line-track) calc(var(--on) * 100%), var(--color-rule-strong)); }
+.ex-stage-name { font-size: var(--text-sm); font-weight: 720; line-height: 1.25; color: var(--color-ink-2); }
+.ex-stage.is-current .ex-stage-name { color: color-mix(in oklab, var(--line-track-ink) calc(var(--on) * 100%), var(--color-ink-2)); }
+.ex-app {
+  position: relative; z-index: 1; display: grid; gap: 2px; padding: var(--space-xs) var(--space-sm);
+  background: var(--color-sheet); border: 1.5px solid var(--line-track); border-radius: 8px; box-shadow: var(--shadow-lift);
+}
+.ex-app-title { font-weight: 740; font-size: var(--text-sm); line-height: 1.25; }
+.ex-app-co { font-size: var(--text-xs); color: var(--color-ink-2); }
+.ex-app-chip { justify-self: start; margin-top: var(--space-2xs); padding: .15em .65em; border-radius: var(--radius-pill); background: var(--tint-track); color: var(--line-track-ink); font-size: var(--text-xs); font-weight: 680; white-space: nowrap; }
+.ex-history { padding: 0 var(--space-md); background: var(--color-sheet); border: var(--rule-hair) solid var(--color-rule); border-radius: 10px; box-shadow: var(--shadow-lift); }
+.ex-history .ex-event:first-child { border-top: 0; }
+.ex-event-what .ex-ic { vertical-align: -2px; color: var(--line-track-ink); }
+
+/* ───────────────────────── 7. never ───────────────────────── */
+
+.ex-overview > .ex-never { padding-block: var(--space-3xl) var(--space-4xl); z-index: 1; }
+.ex-never-inner { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: var(--space-xl) var(--space-3xl); align-items: start; }
+.ex-never-side { position: sticky; top: calc(var(--top-h) + var(--space-xl)); display: grid; gap: var(--space-md); justify-items: start; }
+.ex-never-word { font-size: clamp(5rem, 1.5rem + 11vw, 14rem); line-height: .8; letter-spacing: -.035em; color: var(--signal); text-wrap: nowrap; }
+.ex-never-lede { color: var(--color-ink-2); max-width: 36ch; font-size: var(--text-lg); line-height: 1.45; }
+.ex-never .ex-more { color: var(--color-ink); text-decoration-color: var(--color-ink-3); }
+.ex-never-list li { display: grid; gap: var(--space-2xs); padding: var(--space-lg) 0; border-top: var(--rule-hair) solid var(--color-rule-strong); }
+.ex-never-list li:first-child { border-top: 0; padding-top: var(--space-sm); }
+.ex-never-rule { font-size: clamp(1.6rem, 1rem + 1.5vw, 2.6rem); line-height: 1.08; letter-spacing: -.012em; }
+.ex-never-more { color: var(--color-ink-2); }
+.ex-does { grid-column: 1 / -1; margin-top: var(--space-xl); padding-top: var(--space-xl); border-top: var(--rule-hair) solid var(--color-rule-strong); display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: var(--space-md) var(--space-3xl); }
+.ex-does-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-sm) var(--space-xl); }
+.ex-does-list li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: var(--space-xs); color: var(--color-ink-2); font-size: var(--text-sm); }
+.ex-does-list .ex-ic { color: var(--line-apply); margin-top: 4px; }
+
+/* ───────────────────────── 8. under the hood ───────────────────────── */
+
+.ex-overview > .ex-hood { display: grid; gap: var(--space-2xl); }
+.ex-hood-head { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: var(--space-lg) var(--space-2xl); align-items: end; }
+.ex-hood-side { display: grid; gap: var(--space-md); justify-items: start; }
+.ex-hoodmap {
+  position: relative; aspect-ratio: var(--w) / var(--h); container-type: inline-size;
+  background: var(--color-sheet); border: var(--rule-hair) solid var(--color-rule); border-radius: 14px; box-shadow: var(--shadow-lift);
+}
+.ex-hoodmap .ex-net-svg { display: block; position: absolute; inset: 0; width: 100%; height: 100%; transition: none; }
+.ex-hood-node, .ex-hood-gate { position: absolute; left: calc(var(--x) / var(--w) * 100%); top: calc(var(--y) / var(--h) * 100%); white-space: nowrap; font-size: var(--text-xs); font-stretch: var(--wdth-sign); }
+.ex-hood-node { display: flex; flex-direction: column; align-items: center; gap: 5px; translate: -50% -12px; font-weight: 680; }
+.ex-hood-node[data-up] { flex-direction: column-reverse; translate: -50% calc(-100% + 12px); }
+.ex-hood-dot { width: 24px; height: 24px; border-radius: 50%; border: 6px solid var(--color-ink); background: var(--color-sheet); }
+.ex-hood-name { padding: 1px 5px; border-radius: 3px; background: var(--color-sheet); line-height: 1.25; }
+.ex-hood-gate { translate: -50% -34px; padding: 0 4px; background: var(--color-sheet); font-weight: 720; color: var(--signal-ink); }
+/* Where the names would not fit, the map is its lines and stations alone. */
+@container (max-width: 760px) {
+  .ex-hood-name, .ex-hood-gate { display: none; }
+  .ex-hood-node, .ex-hood-node[data-up] { translate: -50% -6px; }
+  .ex-hood-dot { width: 12px; height: 12px; border-width: 3px; }
+}
+.ex-hood-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-lg) var(--space-xl); }
+.ex-hood-facts li { display: grid; gap: var(--space-3xs); align-content: start; padding-top: var(--space-sm); border-top: 2px solid var(--color-ink); }
+.ex-hood-fact { font-weight: 740; line-height: 1.25; }
+.ex-hood-fact-text { font-size: var(--text-sm); color: var(--color-ink-2); }
+.ex-sources .ex-feeds { margin-top: 0; padding-top: var(--space-xl); border-top: var(--rule-hair) solid var(--color-rule-strong); }
+
+/* ───────────────────────── 9. run the line, register, close ───────────────────────── */
+
+.ex-run-head { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: var(--space-lg) var(--space-2xl); align-items: end; }
+.ex-run .ex-platform { border-radius: 14px; box-shadow: none; clip-path: none; padding-inline: var(--space-xl); margin-top: var(--space-2xl); }
+
+.ex-overview > .ex-ledger { display: grid; grid-template-columns: minmax(0, .82fr) minmax(0, 1.18fr); gap: var(--space-xl) var(--space-2xl); align-items: start; }
+.ex-ledger-head { position: sticky; top: calc(var(--top-h) + var(--space-lg)); display: grid; gap: var(--space-sm); }
+.ex-ledger-head .ex-big { font-size: clamp(2.2rem, 1rem + 2.8vw, 4rem); }
+.ex-ledger-note { font-size: var(--text-sm); color: var(--color-ink-3); min-height: 2.8em; }
+.ex-ledger-group { border-top: 2px solid var(--color-ink); }
+.ex-ledger-group:last-child { border-bottom: 2px solid var(--color-ink); }
+.ex-ledger-group summary { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-md); padding: var(--space-sm) 0; cursor: pointer; list-style: none; }
+.ex-ledger-group summary::-webkit-details-marker { display: none; }
+.ex-ledger-area { font-family: var(--font-serif); font-weight: 400; font-size: clamp(1.9rem, 1.2rem + 1.6vw, 2.9rem); line-height: 1; letter-spacing: -.015em; transition: color var(--dur-short) var(--ease-out); }
+.ex-ledger-tally { font-size: var(--text-sm); color: var(--color-ink-3); white-space: nowrap; }
+.ex-ledger-tally::after {
+  content: ''; display: inline-block; width: .5em; height: .5em; margin-left: .8em; translate: 0 -.15em;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg);
+  transition: transform var(--dur-short) var(--ease-out);
+}
+.ex-ledger-group[open] .ex-ledger-tally::after { transform: rotate(-135deg); translate: 0 .1em; }
+@media (hover: hover) and (pointer: fine) { .ex-ledger-group summary:hover .ex-ledger-area { color: var(--line-find-ink); } }
+.ex-ledger-rows { padding-bottom: var(--space-md); }
+.ex-ledger-row { display: grid; grid-template-columns: minmax(0, 13rem) minmax(0, 1fr) auto 28px; gap: var(--space-3xs) var(--space-md); align-items: baseline; padding: var(--space-xs) 0; border-top: var(--rule-hair) solid var(--color-rule); }
+.ex-ledger-name { font-weight: 680; }
+.ex-ledger-what { color: var(--color-ink-2); font-size: var(--text-sm); }
+.ex-ledger-link { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: var(--color-ink-3); align-self: center; transition: background-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out); }
+@media (hover: hover) and (pointer: fine) { .ex-ledger-link:hover { background: var(--color-ink); color: var(--color-on-ink); } }
+
+.ex-overview > .ex-close { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: var(--space-xl) var(--space-2xl); align-items: end; padding-bottom: var(--space-3xl); }
+.ex-close-title { font-size: clamp(3rem, 1rem + 5.4vw, 7rem); line-height: .9; letter-spacing: -.028em; max-width: 12ch; }
+.ex-close-side { display: grid; gap: var(--space-lg); justify-items: start; }
+.ex-next { display: grid; gap: var(--space-xs); counter-reset: step; font-weight: 680; }
+.ex-next li { display: flex; align-items: center; gap: var(--space-xs); counter-increment: step; }
+.ex-next li::before {
+  content: counter(step); display: grid; place-items: center; width: 1.8rem; height: 1.8rem; border-radius: 50%;
+  border: 1.5px solid var(--color-ink); font-size: var(--text-sm); font-variant-numeric: tabular-nums;
+}
+
+/* ───────────────────────── 10. the chapter rail ───────────────────────── */
+
+/* The line itself, small, at the foot of the window while the chapters play. */
+.ex-rail { display: none; }
+html[data-motion="pinned"] .ex-rail {
+  position: fixed; left: 50%; bottom: max(1.25rem, env(safe-area-inset-bottom)); z-index: 26;
+  display: flex; align-items: center; gap: var(--space-sm);
+  padding: .4rem 1rem .4rem 1.15rem; border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--color-paper) 84%, transparent); color: var(--color-ink);
+  border: var(--rule-hair) solid var(--color-rule-strong);
+  box-shadow: 0 18px 40px -16px oklch(0% 0 0 / .55);
+  backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  translate: -50% 160%; opacity: 0; visibility: hidden;
+  transition: translate 620ms var(--ease-out), opacity 300ms var(--ease-out), visibility 0s linear 620ms;
+}
+html[data-motion="pinned"] .ex-rail.is-on, html[data-motion="pinned"] .ex-rail:focus-within { translate: -50% 0; opacity: 1; visibility: visible; transition-delay: 0s; }
+.ex-rail-now { min-width: 7.25rem; font-size: var(--text-sm); font-weight: 700; white-space: nowrap; }
+.ex-rail[data-signal="true"] .ex-rail-now { color: var(--signal-ink); }
+.ex-rail-line { position: relative; }
+.ex-rail-line::before, .ex-rail-fill { content: ''; position: absolute; left: 12px; right: 12px; top: 50%; height: 2px; margin-top: -1px; border-radius: 1px; }
+.ex-rail-line::before { background: var(--color-rule-strong); }
+.ex-rail-fill { display: block; background: var(--color-ink); transform: scaleX(0); transform-origin: left center; }
+.ex-rail ol { position: relative; display: flex; align-items: center; gap: .25rem; }
+.ex-rail-stop a { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; }
+.ex-rail-dot {
+  width: 10px; height: 10px; border-radius: 50%; background: var(--color-paper); box-shadow: inset 0 0 0 2px var(--color-ink-3);
+  transition: scale var(--dur-short) var(--ease-out), background-color var(--dur-short) var(--ease-out), box-shadow var(--dur-short) var(--ease-out);
+}
+.ex-rail-stop.is-past .ex-rail-dot { background: var(--color-ink); box-shadow: none; }
+.ex-rail-stop.is-here .ex-rail-dot { background: var(--line); box-shadow: 0 0 0 3px var(--color-paper), 0 0 0 5px var(--line); scale: 1.2; }
+.ex-rail-signal { width: 9px; height: 9px; margin-inline: 2px; rotate: 45deg; border-radius: 1px; background: var(--signal); opacity: .55; transition: opacity var(--dur-short) var(--ease-out), scale var(--dur-short) var(--ease-out); }
+.ex-rail-signal.is-past, .ex-rail-signal.is-here { opacity: 1; }
+.ex-rail-signal.is-here { scale: 1.35; }
+@media (hover: hover) and (pointer: fine) { .ex-rail-stop a:hover .ex-rail-dot { scale: 1.35; } }
+
+/* ───────────────────────── 11. held sheets ───────────────────────── */
+
+/*
+ * A sheet's section is a runway (2 + --play) stages long. Its stage sticks
+ * under the header, the picture plays across --play stages, and the next
+ * section overlaps the last stage-height, so the next sheet rises over this
+ * one while it is still held. When the next sheet lands, this one lets go
+ * underneath it. motion.js scrubs the picture, the tilt and the shade.
+ */
+/* The chapter rail floats over the foot of every held sheet; the sheet keeps that strip clear. */
+html[data-motion="pinned"] { --rail-room: 5rem; }
+html[data-motion="pinned"] .ex-sheet-chapter { --play: .95; height: calc(var(--stage-h) * (2 + var(--play))); }
+html[data-motion="pinned"] .ex-gate { --play: .5; }
+html[data-motion="pinned"] .ex-sheet-chapter + .ex-sheet-chapter,
+html[data-motion="pinned"] .ex-sheet-chapter + .ex-never { margin-top: calc(-1 * var(--stage-h)); }
+html[data-motion="pinned"] .ex-plate {
+  position: sticky; top: var(--top-h); height: var(--stage-h); padding-block: 0; overflow: clip;
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  transform-origin: 50% 0; will-change: transform;
+}
+html[data-motion="pinned"] .ex-overview > .ex-never { transform-origin: 50% 0; }
+html[data-motion="pinned"] .ex-scene-inner {
+  min-height: 0; padding-block: clamp(1rem, 3.6vh, 2.75rem) var(--rail-room);
+  grid-template-columns: minmax(0, .78fr) minmax(0, 1.22fr); grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "head pic" "notes pic"; gap: clamp(.9rem, 2.4vh, 1.6rem) clamp(2rem, 4.5vw, 5rem);
+}
+html[data-motion="pinned"] .ex-scene[data-layout="split-flip"] .ex-scene-inner { grid-template-columns: minmax(0, 1.22fr) minmax(0, .78fr); grid-template-areas: "pic head" "pic notes"; }
+html[data-motion="pinned"] .ex-scene-claim { font-size: clamp(2.2rem, min(1rem + 2.6vw, 7.4vh), 4.6rem); }
+html[data-motion="pinned"] .ex-scene-body { font-size: var(--text-md); }
+/* The picture is centred in its side of the sheet, and scaled to fit a short window (motion.js sets --fit). */
+html[data-motion="pinned"] .ex-scene-pic { display: grid; place-items: center; min-height: 0; align-self: stretch; }
+html[data-motion="pinned"] .ex-scene-pic > .ex-demo { width: 100%; transform: scale(var(--fit, 1)); transform-origin: 50% 0; }
+html[data-motion="pinned"] .ex-scene-rail { display: block; position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; height: 4px; background: var(--line); transform-origin: left center; }
+/* On a held sheet only the moment that is playing is spelled out; the rest keep their names. */
+html[data-motion="pinned"] .ex-beat { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 0fr; row-gap: 0; transition: grid-template-rows 420ms var(--ease-out), border-color var(--dur-short) var(--ease-out); }
+html[data-motion="pinned"] .ex-beat-name { color: var(--color-ink-3); transition: color var(--dur-short) var(--ease-out); }
+html[data-motion="pinned"] .ex-beat-text { min-height: 0; overflow: hidden; opacity: 0; transition: opacity 320ms var(--ease-out); }
+html[data-motion="pinned"] .ex-beat.is-on { grid-template-rows: auto 1fr; border-top-color: var(--line); }
+html[data-motion="pinned"] .ex-beat.is-on .ex-beat-name { color: var(--color-ink); }
+html[data-motion="pinned"] .ex-beat.is-on .ex-beat-text { opacity: 1; padding-top: var(--space-3xs); }
+html[data-motion="pinned"] .ex-gate-inner { align-content: center; padding-block: clamp(1rem, 4vh, 3rem) var(--rail-room); }
+@media (max-height: 780px) {
+  html[data-motion="pinned"] .ex-scene-body { font-size: var(--text-sm); }
+  html[data-motion="pinned"] .ex-beat { padding: .4rem 0; font-size: .8125rem; line-height: 1.4; }
+  html[data-motion="pinned"] .ex-scene-notes { gap: var(--space-xs); }
+  html[data-motion="pinned"] .ex-scene-head { gap: var(--space-xs); }
+  html[data-motion="pinned"] .ex-yours { display: none; }
+  html[data-motion="pinned"] .ex-gate-title { font-size: clamp(3.4rem, 15vh, 9rem); }
+}
+
+/* ───────────────────────── 12. motion, narrow screens ───────────────────────── */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Load, played once (main.js marks it done so returning to the Overview does not replay it). */
+  html[data-ready]:not([data-intro="done"]) .ex-line > span { animation: ex-line-up 1.1s var(--ease-out) both; }
+  html[data-ready]:not([data-intro="done"]) .ex-line:nth-of-type(2) > span { animation-delay: 110ms; }
+  html[data-ready]:not([data-intro="done"]) :is(.ex-hero-foot, .ex-hero-proof) { animation: ex-rise 1s var(--ease-out) 380ms both; }
+  html[data-ready]:not([data-intro="done"]) .ex-hero-proof { animation-delay: 520ms; }
+  /* The lamp lands after the words, then rings once: this is where you come in. */
+  html[data-ready]:not([data-intro="done"]) .ex-lamp { animation: ex-pop 520ms var(--ease-out) 640ms both; }
+  html[data-ready]:not([data-intro="done"]) .ex-lamp::after { animation: ex-ring 1.1s var(--ease-out) 1050ms 2; }
+
+  /* The register and the close, once, as they arrive. */
+  html[data-reveals="on"] .ex-ledger[data-reveal=""] :is(.ex-ledger-head, .ex-ledger-group) { opacity: 0; transform: translateY(24px); }
+  .ex-ledger-head, .ex-ledger-group { transition: opacity var(--dur-move) var(--ease-out), transform 900ms var(--ease-out); }
+  .ex-ledger-group:nth-child(2) { transition-delay: 60ms; }
+  .ex-ledger-group:nth-child(3) { transition-delay: 120ms; }
+  .ex-ledger-group:nth-child(4) { transition-delay: 180ms; }
+  .ex-ledger-group:nth-child(5) { transition-delay: 240ms; }
+  .ex-ledger-group:nth-child(6) { transition-delay: 300ms; }
+  .ex-ledger.is-filtering .ex-ledger-row { animation: ex-rise-sm 380ms var(--ease-out) both; animation-delay: calc(min(var(--k), 8) * 28ms); }
+  html[data-reveals="on"] .ex-close[data-reveal=""] > * { opacity: 0; transform: translateY(28px); }
+  .ex-close > * { transition: opacity 800ms var(--ease-out), transform 1s var(--ease-out); }
+  .ex-close > :nth-child(2) { transition-delay: 140ms; }
+}
+
+@media (max-width: 1100px) {
+  .ex-overview > .ex-hero { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: var(--space-xl); }
+  .ex-never-inner, .ex-does { grid-template-columns: minmax(0, 1fr); }
+  .ex-never-side { position: static; }
+}
+@media (max-width: 900px) {
+  .ex-overview > .ex-ledger, .ex-hood-head, .ex-run-head, .ex-overview > .ex-close { grid-template-columns: minmax(0, 1fr); }
+  .ex-ledger-head { position: static; }
+  .ex-hood-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ex-contrast { grid-template-columns: minmax(0, 1fr); gap: var(--space-md); }
+}
+@media (max-width: 760px) {
+  .ex-overview > .ex-hero {
+    min-height: 0; grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "title" "field" "foot" "proof"; row-gap: var(--space-md);
+  }
+  .ex-hero-title { text-wrap: balance; }
+  .ex-crowd { min-height: 17rem; margin-inline: calc(-1 * var(--page-pad)); }
+  .ex-fcard { width: 9.25rem; padding: .6rem .7rem; }
+  .ex-fcard.is-ours { width: 12.5rem; }
+  :root { --radius-sheet: 20px; }
+  .ex-plate { padding-block: var(--space-sm) calc(var(--space-2xl) + var(--radius-sheet)); }
+  .ex-scene-inner { padding-top: var(--space-lg); gap: var(--space-lg); }
+  .ex-chrome-fact { margin-left: 0; flex-basis: 100%; }
+  .ex-beat { grid-template-columns: minmax(0, 1fr); }
+  .ex-gate-inner { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-md); }
+  .ex-gate-title { text-wrap: balance; font-size: clamp(3rem, 1rem + 10vw, 5rem); }
+  .ex-gate-track { --at: 70%; }
+  .ex-gate-tag { display: none; }
+  .ex-spread .ex-sheets { grid-template-columns: minmax(0, 1fr); }
+  .ex-board .ex-board-row, .ex-board-copy { grid-template-columns: minmax(0, 1fr); gap: var(--space-3xs); }
+  .ex-board-out { text-align: left; }
+  /* The stages stand in a column, each a row: name on the left, the application beside it. */
+  .ex-stages { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .ex-stage { grid-template-columns: 7.5rem minmax(0, 1fr); align-items: center; min-height: 4.6rem; padding: var(--space-xs) 0 var(--space-xs) var(--space-sm); border-top: 0; border-left: var(--rule-line) solid var(--color-rule-strong); }
+  .ex-stage.is-past { border-left-color: var(--line-track); }
+  .ex-stage.is-current { border-left-color: color-mix(in oklab, var(--line-track) calc(var(--on) * 100%), var(--color-rule-strong)); }
+  .ex-does-list { grid-template-columns: minmax(0, 1fr); }
+  .ex-ledger-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .ex-ledger-what { grid-column: 1 / -1; grid-row: 2; }
+  .ex-ledger-link { display: none; }
+  .ex-run .ex-platform { padding-inline: var(--space-md); }
+}
+@media (max-width: 420px) {
+  .ex-hood-facts { grid-template-columns: minmax(0, 1fr); }
+  .ex-field-tag { justify-items: start; text-align: left; }
+  .ex-gate-head { width: 3.75rem; }
+}
+
+/* The footer's statement, in the Overview's voice. */
+.ex-foot-line { font-family: var(--font-serif); font-weight: 400; font-stretch: 100%; font-size: clamp(2rem, 1rem + 2.6vw, 3.6rem); letter-spacing: -.02em; line-height: 1; }
+
+/* Track's four stages share a narrow picture on a small held sheet: the names step down a size. */
+.ex-trackfig { container-type: inline-size; }
+@container (max-width: 36rem) {
+  .ex-stage-name { font-size: var(--text-xs); }
+  .ex-stages { gap: var(--space-2xs); }
+}
+
+/* On a held sheet the score's parts share the width, so the picture keeps its size. */
+html[data-motion="pinned"] .ex-scorecard {
+  grid-template-columns: minmax(0, .82fr) minmax(0, 1.18fr);
+  grid-template-areas: "main posting" "bars bars" "presets presets" "meaning meaning" "cap cap"; row-gap: var(--space-sm);
+}
+html[data-motion="pinned"] .ex-scorecard .ex-bars { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--space-xl); }
+html[data-motion="pinned"] .ex-score-presets { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-sm); }
+html[data-motion="pinned"] .ex-scorecard .ex-score-num { font-size: clamp(5.5rem, 16vh, 12rem); }
+html[data-motion="pinned"] .ex-meaning-note { flex: 1 1 auto; }
+
+/* A short window: the picture takes more of the width and the frame gives back its padding,
+   so the picture keeps a readable size. */
+@media (max-height: 860px) {
+  html[data-motion="pinned"] { --rail-room: 4.25rem; }
+  html[data-motion="pinned"] .ex-chrome { padding-block: .7rem; }
+  html[data-motion="pinned"] .ex-scene-inner { padding-top: clamp(.75rem, 2.4vh, 1.5rem); grid-template-columns: minmax(0, .64fr) minmax(0, 1.36fr); column-gap: clamp(1.5rem, 3vw, 3rem); }
+  html[data-motion="pinned"] .ex-scene[data-layout="split-flip"] .ex-scene-inner { grid-template-columns: minmax(0, 1.36fr) minmax(0, .64fr); }
+  html[data-motion="pinned"] .ex-scene-claim { font-size: clamp(2rem, 6.4vh, 3.4rem); }
+  html[data-motion="pinned"] .ex-sheet { padding: var(--space-md); }
+  html[data-motion="pinned"] .ex-formfig .ex-form { padding: var(--space-md) var(--space-lg); gap: var(--space-xs); }
+  html[data-motion="pinned"] .ex-field-box { min-height: 36px; }
+  html[data-motion="pinned"] .ex-rail { bottom: .75rem; }
+  html[data-motion="pinned"] .ex-board .ex-board-row { padding-block: .7rem; }
+}

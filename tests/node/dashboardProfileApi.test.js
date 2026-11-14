@@ -139,6 +139,18 @@ describe('dashboard application profile API', () => {
     expect(body.questions.openCount).toBe(0);
   });
 
+  it('flags template values, so the page can show them as placeholders instead of saved data', async () => {
+    const { body } = await get('/api/profile');
+    // The shipped example's email and answers are TEMPLATE text ...
+    expect(body.profile.fields.find((f) => f.field === 'email').placeholder).toBe(true);
+    expect(body.screening.answers.find((a) => a.id === 'years_experience').placeholder).toBe(true);
+
+    // ... and once there is a real value, it is no longer flagged.
+    expect((await post('/api/profile', { values: { 'contact.email': 'real.person@gmail.com' } })).status).toBe(200);
+    const after = (await get('/api/profile')).body;
+    expect(after.profile.fields.find((f) => f.field === 'email').placeholder).toBe(false);
+  });
+
   it('captures what a run could not answer, with the job that asked and a usable suggestion', async () => {
     await runAssist();
 

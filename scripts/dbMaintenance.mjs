@@ -132,9 +132,13 @@ export async function unsafeToWriteReason({ root, port = 4646, fetchImpl = fetch
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 1500);
+    // No access token: a running dashboard answers 401 without one, which is
+    // all this needs, and the token is never sent to an unverified listener.
     const res = await fetchImpl(`http://127.0.0.1:${port}/api/run/status`, { signal: controller.signal });
     clearTimeout(timer);
-    if (res.ok) return `the dashboard is running on 127.0.0.1:${port} — stop it first`;
+    // 401 is a dashboard that is up but locked (its access token, P1-5): it is
+    // still holding the database, so writing now is just as unsafe.
+    if (res.ok || res.status === 401) return `the dashboard is running on 127.0.0.1:${port} — stop it first`;
   } catch { /* nothing listening: safe */ }
   return null;
 }

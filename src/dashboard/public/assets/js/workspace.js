@@ -3,11 +3,12 @@
 import { $, el, fmt, toast } from './dom.js';
 import { state } from './state.js';
 import { api, postJson } from './api.js';
-import { cssEscape, loadDetail, selectJob } from './detail.js';
+import { cssEscape, loadDetail, revealInDetail, selectJob, syncDetailToList } from './detail.js';
 import { autofillOne, scheduleRefresh } from './mutations.js';
 import { openSubmitDialog } from './actions.js';
 import { autofillBlockedReason, scheduleTodayReload } from './today.js';
 import { savePreference } from './main.js';
+import { signInStrip } from './signin.js';
 
 /* ───────────────────────── Applications workspace ─────────────────────────
  * One column per stage, in the order an application moves: the three the
@@ -97,6 +98,10 @@ export function loadWorkspace() {
       state.known.set(item.id, { ...(state.known.get(item.id) ?? {}), ...item });
     }
     renderWorkspace();
+    if (state.syncDetail && state.view === 'applications') {
+      state.syncDetail = false;
+      syncDetailToList((state.workspace.items ?? []).map((i) => i.id));
+    }
   })().finally(() => { workspaceInFlight = null; });
   return workspaceInFlight;
 }
@@ -115,6 +120,7 @@ export function renderWorkspace() {
   const data = state.workspace;
   if (!data) return;
   renderMetrics(data.metrics, data.weekly);
+  renderConversion(data.conversion, data.metrics);
   const board = $('wsBoard');
   const focusedId = document.activeElement?.closest?.('.ws-card')?.dataset.id;
   board.textContent = '';
@@ -126,6 +132,8 @@ export function renderWorkspace() {
       el('button', { type: 'button', class: 'small primary', 'data-action': 'set-view', 'data-view': 'board', text: 'Find a job to apply to' })));
     return;
   }
+  const signin = signInStrip(data.signInGroups ?? []);
+  if (signin) board.append(signin);
   // Two bands, one per phase, so all seven stages fit a laptop screen
   // without sideways scrolling; a wide screen lays them out as one row (CSS).
   for (const phase of ['prepare', 'outcome']) {
@@ -222,6 +230,37 @@ export function renderMetrics(m, weekly = null) {
     el('span', { class: 'ws-rates-note', text: ' · from outcomes you recorded' })));
 }
 
+const DIM_LABELS = { source: 'Where you found it', ats: 'Application system', scoreBand: 'Fit score', tier: 'Tier', applySpeed: 'Applied after posting' };
+
+/** One conversion cell, in words: "2 of 9 (22%)" or "3 sent; too few to tell". Pure. */
+export function conversionText(cell, minCell = 5) {
+  if (cell.tooFew) return `${cell.submitted} sent; too few to tell (needs ${minCell})`;
+  return `${cell.interviews} of ${cell.submitted} reached an interview (${cell.interviewRate}%)`;
+}
+
+/** "What gets interviews" (P2-9), under the numbers, once anything was submitted. */
+export function renderConversion(conversion, metrics) {
+  const host = $('wsMetrics');
+  if (!host || !conversion || !metrics?.submitted) return;
+  const details = el('details', { class: 'ws-conversion', 'data-key': 'ws-conversion' });
+  details.append(el('summary', { text: 'What gets interviews' }));
+  details.append(el('p', { class: 'faint', text: 'From the outcomes you recorded. A group with fewer than '
+    + `${conversion.minCell} applications shows no percentage, so one lucky reply never looks like a pattern.` }));
+  for (const [dim, label] of Object.entries(DIM_LABELS)) {
+    const rows = conversion[dim] ?? [];
+    if (!rows.length) continue;
+    const table = el('table', { class: 'mini ws-conv-table' });
+    table.append(el('caption', { text: label }));
+    const body = el('tbody');
+    for (const cell of rows) {
+      body.append(el('tr', {}, el('th', { scope: 'row', text: cell.key }), el('td', { text: conversionText(cell, conversion.minCell) })));
+    }
+    table.append(body);
+    details.append(table);
+  }
+  host.append(details);
+}
+
 const shortDay = (day) => {
   if (!day) return '';
   const at = new Date(`${day}T12:00:00Z`);
@@ -314,7 +353,9 @@ export function workspaceCard(item) {
     foot.append(el('button', {
       type: 'button', class: 'small ghost ws-move', 'data-action': 'ws-move-menu', 'data-id': item.id,
       // A closed card can only be corrected (Undo), not moved on.
-      'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': `Update status of ${item.title}`,
+      // Name starts with the visible word (WCAG 2.5.3, label in name).
+      'aria-haspopup': 'menu', 'aria-expanded': 'false',
+      'aria-label': `${item.allowedOutcomes?.length ? 'Move' : 'Change'}: update the status of ${item.title}`,
       text: item.allowedOutcomes?.length ? 'Move' : 'Change',
     }));
   }
@@ -395,7 +436,9 @@ export async function workspaceAct(target) {
     case 'submit': openSubmitDialog(id); break;
     case 'outcome': openMoveMenu(target); break;
     case 'followup': await openApplicationDetail(id); break;
-    default: await selectJob(id, { user: true });
+    // "See what stopped it", "Check the error", "Confirm it went through",
+    // "Review resume": open the job at the part the button names.
+    default: await revealInDetail(id);
   }
 }
 

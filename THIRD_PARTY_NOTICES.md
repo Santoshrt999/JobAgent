@@ -10,13 +10,33 @@ copyrights and licenses. The root license does not relicense those components.
 | --- | --- | --- |
 | `src/dashboard/public/assets/fonts/alex-brush.woff2` | Copyright 2011 The Alex Brush Project Authors | [SIL OFL 1.1](src/dashboard/public/assets/fonts/AlexBrush-OFL.txt) |
 | `src/dashboard/public/assets/fonts/PlayfairDisplay-BoldItalic.woff2` | Copyright 2017 The Playfair Display Project Authors; Reserved Font Name: Playfair Display | [SIL OFL 1.1](src/dashboard/public/assets/fonts/PlayfairDisplay-OFL.txt) |
+| `src/dashboard/public/assets/fonts/archivo-variable.woff2` | Copyright 2020 The Archivo Project Authors | [SIL OFL 1.1](src/dashboard/public/assets/fonts/Archivo-OFL.txt) |
+| `src/dashboard/public/assets/fonts/instrument-serif-400.woff2` | Copyright 2022 The Instrument Serif Project Authors | [SIL OFL 1.1](src/dashboard/public/assets/fonts/InstrumentSerif-OFL.txt) |
 
 Font names and copyright statements were checked against the bundled WOFF2
-metadata. Upstream projects: [Alex Brush](https://github.com/googlefonts/alex-brush)
-and [Playfair Display](https://github.com/clauseggers/Playfair-Display).
+metadata. Upstream projects: [Alex Brush](https://github.com/googlefonts/alex-brush),
+[Playfair Display](https://github.com/clauseggers/Playfair-Display)
+[Archivo](https://github.com/Omnibus-Type/Archivo) (latin subset of the variable font, from `@fontsource-variable/archivo` 5.3.0)
+and [Instrument Serif](https://github.com/Instrument/instrument-serif) (latin subset, regular, from `@fontsource/instrument-serif` 5.2.8).
 Keep the corresponding OFL notice with each redistributed font. OFL fonts
 remain under OFL; using them does not change the license of the application
 or of screenshots made with them. See the [OFL FAQ](https://openfontlicense.org/ofl-faq/).
+
+## Bundled scripts
+
+| Asset | Copyright | License |
+| --- | --- | --- |
+| `src/dashboard/public/assets/vendor/gsap/gsap.min.js`, `ScrollTrigger.min.js` (GSAP 3.13.0) | Copyright 2025 GreenSock (Webflow). All rights reserved. | GSAP Standard "no charge" license, linked from each file's header. **Not MIT and not an open-source license.** |
+
+GSAP drives the scroll-linked scenes of Explore JobAgent and nothing else. The
+two files are the unmodified `dist/` builds from the npm package, copied in
+because the dashboard's Content Security Policy forbids loading script from
+another origin. Their license permits use at no charge, including in
+commercial work, and has its own restrictions; it does not let you relicense
+the files. Keep the header comment in each file. Anyone redistributing
+JobAgent should read the license terms, or remove the two files: the Explore
+page then shows the same content without motion. See
+[the vendoring note](src/dashboard/public/assets/vendor/gsap/README.md).
 
 ## Installed packages
 

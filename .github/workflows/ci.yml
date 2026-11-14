@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # release.yml runs the whole suite before drafting a release.
+  workflow_call:
 
 # Read-only token: CI never needs to write to the repository.
 permissions:
@@ -40,12 +42,23 @@ jobs:
       # Browser tests self-skip without Chromium locally; in CI a skip would be
       # a silent hole, so make them fail instead (tests/node/helpers/browser.js).
       REQUIRE_BROWSER: '1'
+      # The secret store's real OS round-trip (P1-8). Windows runs it always
+      # (DPAPI writes only to a temp folder); the macOS runner's keychain is
+      # disposable, so it runs there too. Never on a developer's machine.
+      REAL_SECRET_STORE_TEST: ${{ matrix.os == 'macos-latest' && '1' || '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      # Some Node tests drive the real Python tailor (python-docx): rewrites,
+      # cover-letter .docx, document versions, the Chromium PDF path.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
       - run: npm ci
 
       - name: Resolve Playwright version
@@ -81,12 +94,21 @@ jobs:
           node src/index.js doctor --json > doctor.json || true
           node -e "const r = JSON.parse(require('fs').readFileSync('doctor.json', 'utf8')); if (!Array.isArray(r.checks) || typeof r.ok !== 'boolean') { console.error('unexpected doctor --json shape'); process.exit(1); } console.log('doctor --json: ' + JSON.stringify(r.summary));"
 
-      - run: npm test
+      # One cell also enforces the coverage thresholds in vitest.config.js.
+      - if: matrix.os == 'ubuntu-latest' && matrix.node == '22.x'
+        run: npm run test:coverage
+      - if: ${{ !(matrix.os == 'ubuntu-latest' && matrix.node == '22.x') }}
+        run: npm test
 
   python-tests:
-    name: pytest (Python 3.12)
-    runs-on: ubuntu-latest
+    name: pytest (Python 3.12 / ${{ matrix.os }})
+    # tailor.py and the other Python helpers run on users' Windows machines too.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -102,6 +124,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The personal-data check reads every commit on every ref.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: '22.x'
@@ -114,3 +139,13 @@ jobs:
       # `npm run lint` runs eslint, then ruff when it is installed.
       - run: npm run lint
       - run: npm run typecheck
+      # No personal-data path may appear anywhere in history, and (when the
+      # PERSONAL_DATA_DENYLIST secret is set) no tracked file may contain a
+      # denylisted value. Values are never printed. Fork PRs get no secrets,
+      # so they run the history check only.
+      # The npm license inventory must match package-lock.json (P1-10).
+      - run: node scripts/licenseInventory.mjs --check
+      - name: personal-data check
+        env:
+          PERSONAL_DATA_DENYLIST: ${{ secrets.PERSONAL_DATA_DENYLIST }}
+        run: node scripts/checkPersonalData.mjs

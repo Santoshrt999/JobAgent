@@ -463,6 +463,7 @@ describe('dashboard batch actions + CSV export', () => {
       config: { root: '/fake/root' }, db, logger: null, port: 0,
       deps: {
         now: () => NOW,
+        liveVerifiedAts: ['greenhouse'], // a supervised live run is on record (P1-11)
         assistFn: async ({ options }) => (options?.autoSubmit
           // Mirrors the real runner contract: submitted:true is ONLY ever
           // reported together with a positive post-submit verification.

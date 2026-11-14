@@ -23,6 +23,7 @@ import {
   pythonExe, pythonSpawnOptions, pythonTimeoutMs, killProcessTree,
 } from './pythonEnv.js';
 import { masterResumeFile } from '../profile/workspace.js';
+import { docxToPdfViaChromium, pdfEngine } from './chromiumPdf.js';
 
 /**
  * The active person's master resume (never overwritten by tailoring). Each
@@ -110,6 +111,19 @@ export function vocabularyFromScoring(scoring = {}) {
     for (const term of list) add(term);
   }
   return out;
+}
+
+/**
+ * The page budget the tailor works to. Unset means the two-page default; 0
+ * means never omit a bullet to fit; anything else is clamped to 1 to 6.
+ * @param {unknown} value
+ * @returns {number}
+ */
+export function pageBudget(value) {
+  if (value === undefined || value === null || value === '') return 2;
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return 2;
+  return n <= 0 ? 0 : Math.min(6, n);
 }
 
 /**
@@ -220,10 +234,22 @@ export async function tailorResumeForJob({ job, score, config, options = {}, dep
     patterns: config.humanizerPatterns ?? {},
     add_summary_line: options.addSummaryLine === true,
     enable_rewrites: options.enableRewrites === true,
-    export_pdf: options.exportPdf === true,
+    // RESUME_PDF_ENGINE=chromium: no Word/LibreOffice attempt; Chromium below.
+    export_pdf: options.exportPdf === true && pdfEngine(deps.env ?? process.env) !== 'chromium',
     // Hard length target. The tailor omits whole low-relevance bullets from the
     // oldest roles to hit it; it never shortens or rewrites a claim.
-    max_pages: Number(options.maxPages) > 0 ? Number(options.maxPages) : 2,
+    // 0 (config.runtime.resumeMaxPages) means "never omit anything to fit".
+    max_pages: pageBudget(options.maxPages),
+    // Bullets a person accepted after each rewrite was verified against cited
+    // master-resume evidence (src/resume/rewrites.js). Empty = no rewriting.
+    ...(Array.isArray(options.acceptedRewrites) && options.acceptedRewrites.length
+      ? { accepted_rewrites: options.acceptedRewrites }
+      : {}),
+    // Bullets the person pinned for this job ("Keep it" in the comparison):
+    // the page fit never omits them.
+    ...(Array.isArray(options.keepBullets) && options.keepBullets.length
+      ? { keep_bullets: options.keepBullets.map(String) }
+      : {}),
   };
 
   let response;
@@ -251,6 +277,24 @@ export async function tailorResumeForJob({ job, score, config, options = {}, dep
         + `${response.output_path}. This usually means the Node/Python text `
         + 'encodings disagree about a non-ASCII character in the employer name.',
     };
+  }
+
+  // No PDF from Word or LibreOffice: print one with Chromium, which ships with
+  // JobAgent, so a PDF always exists (P2-3). RESUME_PDF_ENGINE=office opts out.
+  if (options.exportPdf === true && !response.pdf_path && response.output_path
+      && pdfEngine(deps.env ?? process.env) !== 'office' && deps.chromiumPdf !== false) {
+    const viaChromium = await docxToPdfViaChromium({
+      docxPath: response.output_path,
+      toHtml: (p) => (deps.resumeHtmlFn ?? resumeHtml)(p, { root, deps }),
+      deps: { chromium: deps.chromium },
+    });
+    if (viaChromium.exported) {
+      response.pdf_path = viaChromium.pdfPath;
+      response.page_count = viaChromium.pages;
+      response.pdf_result = { exported: true, pdf_path: viaChromium.pdfPath, pages: viaChromium.pages, reason: viaChromium.reason };
+    } else {
+      response.pdf_result = { ...(response.pdf_result ?? {}), reason: `${response.pdf_result?.reason ?? 'no converter'}; Chromium: ${viaChromium.reason}` };
+    }
   }
 
   return {
@@ -293,6 +337,32 @@ export async function tailorResumeForJob({ job, score, config, options = {}, dep
     warning: null,
     usedFallback: false,
   };
+}
+
+/**
+ * The master resume's paragraphs as citable units (tailor.py master_units):
+ * [{ id, text, kind: 'bullet'|'role'|'section'|'paragraph', role }]. Read-only.
+ */
+export async function readMasterUnits({ root, deps = {} } = {}) {
+  const master = masterResumePath(root);
+  if (!existsSync(master)) throw new Error(`master resume not found at ${master}`);
+  const response = await invokePython({ mode: 'units', master_path: master }, { ...deps, root });
+  if (!response?.ok || !Array.isArray(response.units)) throw new Error(response?.error ?? 'could not read the master resume');
+  return response.units;
+}
+
+/** A resume DOCX as ATS-safe HTML plus its paragraph texts (P2-3). */
+export async function resumeHtml(docxPath, { root, deps = {} } = {}) {
+  const response = await invokePython({ mode: 'html', docx_path: docxPath }, { ...deps, root });
+  if (!response?.ok) throw new Error(response?.error ?? 'could not render the resume');
+  return { html: response.html, texts: response.texts ?? [] };
+}
+
+/** Write a cover letter's text as a plain .docx (P1-3). Resolves the path. */
+export async function writeLetterDocx({ text, path, root, deps = {} } = {}) {
+  const response = await invokePython({ mode: 'letter_docx', text, path }, { ...deps, root });
+  if (!response?.ok) throw new Error(response?.error ?? 'could not write the cover letter document');
+  return response.path;
 }
 
 /** Spawn the python CLI, feed it the request JSON, and parse its JSON reply. */

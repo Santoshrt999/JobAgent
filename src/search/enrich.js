@@ -37,6 +37,7 @@ import { createHostGate } from '../utils/hostGate.js';
 import { withRetry } from '../utils/retryHandler.js';
 import { htmlToText, parseJsonLdJobs } from './normalize.js';
 import { ENRICHMENT_DEFAULTS } from '../config/userSettings.js';
+import { safeFetch } from '../utils/safeFetch.js';
 
 const TIMEOUT_MS = 20_000;
 /** Below this, a stored jd_text is a teaser rather than a real description. */
@@ -357,7 +358,7 @@ function recordFailure(db, row, { now, error, gone, settings }) {
  */
 export async function runEnrichment({
   db, config, now = new Date(), overrides = {}, source = null, apply = true,
-  shouldCancel = () => false, onProgress = () => {}, fetchImpl = fetch, gate = null,
+  shouldCancel = () => false, onProgress = () => {}, fetchImpl = safeFetch, gate = null,
   sleepFn,
 } = {}) {
   const settings = enrichmentSettings(config, overrides);

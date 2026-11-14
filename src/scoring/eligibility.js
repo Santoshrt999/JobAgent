@@ -38,7 +38,7 @@ import { hardClearanceRequirement } from './exclusionFilter.js';
  * Version of the eligibility semantics, part of the scoring fingerprint. Bump
  * whenever extraction or verdict rules change so stored verdicts re-score.
  */
-export const ELIGIBILITY_VERSION = 1;
+export const ELIGIBILITY_VERSION = 2;
 
 /** Raw points an ineligible posting loses when scoring.weights.eligibility is unset. */
 export const DEFAULT_ELIGIBILITY_PENALTY = 8;
@@ -64,9 +64,11 @@ const DEGREE_NAMES = Object.freeze({
 const JD_DEGREE_PATTERNS = [
   // A PhD as a DEGREE ("PhD in", "a PhD", "PhD required"), not as a noun for
   // people ("the AI/ML PhD recruiting team").
+  // Professional doctorates named by their letters, in a requirement's own words.
+  [DEGREE_LEVELS.doctorate, /\b(?:j\.?d\.?|ll\.?m\.?|pharm\.?\s?d|dnp|d\.?n\.?p\.?)(?=\s*(?:or\b|and\b|degree|required|,|\/|\(|\.|;|$|from\b))/],
   [DEGREE_LEVELS.doctorate, /\b(?:ph\.?\s?d\b\.?|doctorate|doctoral\s+degree)(?=\s*(?:in\b|degree|required|or\b|and\b|with\b|,|\/|\(|\)|\.|;|:|$|preferred|level|program|candidates?\b|holders?\b|from\b|is\b))/],
-  [DEGREE_LEVELS.master, /\b(?:master'?s\b|masters\b|master\s+of\b|master(?=\s*(?:in\b|degree|\/|,|or\b))|m\.s\.|m\.sc\b|msc\b|m\.tech\b|mba\b|ms\s+(?:degree|in)\b|ms(?=\s*(?:,|\/|or\b))|graduate\s+degree\b|advanced\s+degree\b|m\.a\.\/m\.s\.)/],
-  [DEGREE_LEVELS.bachelor, /\b(?:bachelor'?s?\b|bachelors\b|b\.s\.|b\.a\.|bs\/ba\b|ba\/bs\b|bs\s+or\s+ba\b|b\.sc\b|bsc\b|b\.tech\b|b\.e\.|bs\s+(?:degree|in)\b|ba\s+(?:degree|in)\b|bs(?=\s*(?:,|\/|or\b))|undergraduate\s+degree\b|(?:4|four)[\s-]year\s+(?:college\s+|university\s+)?degree\b|(?:college|university)\s+degree\b)/],
+  [DEGREE_LEVELS.master, /\b(?:msn\b|mph\b|msw\b|macc\b|m\.?acc\b|mpa\b|master'?s\b|masters\b|master\s+of\b|master(?=\s*(?:in\b|degree|\/|,|or\b))|m\.s\.|m\.sc\b|msc\b|m\.tech\b|mba\b|ms\s+(?:degree|in)\b|ms(?=\s*(?:,|\/|or\b))|graduate\s+degree\b|advanced\s+degree\b|m\.a\.\/m\.s\.)/],
+  [DEGREE_LEVELS.bachelor, /\b(?:bsn\b|bba\b|bsba\b|bachelor'?s?\b|bachelors\b|b\.s\.|b\.a\.|bs\/ba\b|ba\/bs\b|bs\s+or\s+ba\b|b\.sc\b|bsc\b|b\.tech\b|b\.e\.|bs\s+(?:degree|in)\b|ba\s+(?:degree|in)\b|bs(?=\s*(?:,|\/|or\b))|undergraduate\s+degree\b|(?:4|four)[\s-]year\s+(?:college\s+|university\s+)?degree\b|(?:college|university)\s+degree\b)/],
   [DEGREE_LEVELS.associate, /\bassociate'?s?\s+degree\b|\b(?:2|two)[\s-]year\s+(?:college\s+)?degree\b/],
   [DEGREE_LEVELS.none, /\b(?:high\s+school\s+(?:diploma|degree|education)|hs\s+diploma|ged\b)/],
 ];
@@ -79,13 +81,15 @@ const JD_DEGREE_PATTERNS = [
 const DEGREE_NOT_REQUIREMENT = /\b(?:tuition|reimburse\w*|education(?:al)?\s+(?:benefits?|assistance|programs?)|scholarships?|degrees\b|pay\s+(?:for|up\s+to)|we\s+offer|pursue|earn\s+(?:a|your))/;
 
 /** Cheap prefilter: a clause that names no education cannot state a degree. */
-const EDUCATION_HINT = /degree|bachelor|master|ph\.?\s?d|doctor|b\.[sae]\.|m\.[sa]\.|\bbs\b|\bba\b|\bms\b|msc|bsc|mba|b\.tech|m\.tech|high\s+school|\bged\b|diploma/;
+const EDUCATION_HINT = /degree|bachelor|master|ph\.?\s?d|doctor|b\.[sae]\.|m\.[sa]\.|\bbs\b|\bba\b|\bms\b|msc|bsc|mba|b\.tech|m\.tech|high\s+school|\bged\b|diploma|\bbsn\b|\bmsn\b|\bbba\b|\bmph\b|\bmsw\b|\bj\.?d\b|\bll\.?m\b|pharm\.?\s?d|\bdnp\b/;
 
 /** A candidate's degree string -> level. */
 const CANDIDATE_DEGREE_PATTERNS = [
-  [DEGREE_LEVELS.doctorate, /\b(?:ph\.?\s?d|doctor(?:ate)?\s+of|doctorate|d\.phil|ed\.?d)\b/],
-  [DEGREE_LEVELS.master, /\b(?:master|masters|m\.?s\.?c?|m\.?a\.?|mba|m\.?tech|m\.?eng|mca|mcs|mphil)\b/],
-  [DEGREE_LEVELS.bachelor, /\b(?:bachelor|bachelors|b\.?s\.?c?|b\.?a\.?|b\.?tech|b\.?e\.?|b\.?eng|bca|bcom|b\.?com)\b/],
+  [DEGREE_LEVELS.doctorate, /\b(?:ph\.?\s?d|doctor(?:ate)?\s+of|doctorate|d\.phil|ed\.?d|j\.?d|pharm\.?\s?d|dnp)\b/],
+  [DEGREE_LEVELS.master, /\b(?:master|masters|m\.?s\.?c?|m\.?a\.?|mba|m\.?tech|m\.?eng|mca|mcs|mphil|msn|mph|msw|macc|mpa)\b/],
+  // "BSN" (nursing) was unrecognised, so a nurse's degree read as unknown and
+  // every degree floor on a nursing posting went unjudged.
+  [DEGREE_LEVELS.bachelor, /\b(?:bachelor|bachelors|b\.?s\.?c?|b\.?a\.?|b\.?tech|b\.?e\.?|b\.?eng|bca|bcom|b\.?com|bsn|bba|bsba)\b/],
   [DEGREE_LEVELS.associate, /\b(?:associate|a\.?a\.?s?|a\.?s\.?)\b/],
 ];
 
@@ -132,7 +136,10 @@ const PREFERRED_CUE = /\b(?:preferred|prefer|nice[\s-]to[\s-]haves?|a\s+plus|is\
  * reads as one — a bullet like "Kafka experience is desired" is a clause, not
  * a heading, and must not mark everything after it optional.
  */
-const HEADING = /(^|\n)[ \t•*·\-#]*([a-z][a-z '&/()-]{2,60}?)[ \t]*(?::|\n)/g;
+// The line end is a LOOKAHEAD: consuming it meant the newline before the next
+// line was gone, so a "Preferred:" heading straight after a bullet line was
+// never seen and everything under it counted as required.
+const HEADING = /(^|\n)[ \t•*·\-#]*([a-z][a-z '&/()-]{2,60}?)[ \t]*(?=:|\n)/g;
 const PREFERRED_HEADING = /^(?:(?:preferred|desired|desirable|bonus|additional|optional)(?:\s+(?:qualifications?|skills?|experience|requirements|attributes|points|knowledge))*|(?:nice|good)[\s-]to[\s-]haves?|pluses|extra\s+credit|(?:it'?s\s+)?(?:a\s+)?(?:big\s+)?plus(?:\s+if\s+you\s+have)?|what\s+(?:would\s+)?(?:makes?|sets?)\s+you\s+(?:stand\s+out|apart)|(?:you\s+)?(?:might|may)\s+also\s+have)$/;
 /** Headings that END a preferred section. Generic labels must match whole. */
 const OTHER_HEADING = /\b(?:qualifications|requirements|required|minimum|basic|must[\s-]haves?|what\s+you(?:'ll|\s+will)?\s+(?:need|bring)|who\s+you\s+are|about\s+you|you\s+have|responsibilities|what\s+you(?:'ll|\s+will)\s+do|benefits|about\s+(?:us|the\s+(?:company|team|role))|compensation|what\s+we\s+offer|perks)\b|^(?:(?:relevant\s+)?(?:work\s+|professional\s+)?experience(?:\s+(?:level|required))?|education(?:\s+(?:and|&)\s+experience)?|certifications?(?:\s+\(if\s+applicable\))?|skills|job\s+(?:summary|description|overview)|overview|summary)$/;
@@ -177,11 +184,29 @@ function clausesOf(text) {
       inPreferred = sections[s][1];
       s += 1;
     }
-    const clauseText = text.slice(from, to);
+    // A preferred ASIDE does not make its clause optional: in "5+ years of
+    // experience (8+ preferred)" the floor is 5. The aside is removed so its
+    // number is not read as the floor either.
+    const clauseText = text.slice(from, to).replace(/\(([^)]*)\)/g, (m, inner) => (PREFERRED_CUE.test(inner) ? ' ' : m));
     if (!clauseText.trim()) continue;
     clauses.push({ text: clauseText, preferred: inPreferred || PREFERRED_CUE.test(clauseText) });
   }
   return clauses;
+}
+
+/**
+ * The REQUIRED part of a description: every clause not in a preferred section
+ * and carrying no preferred cue (see clausesOf). Scoring uses it to give a
+ * skill named only under "Nice to have" less credit than a required one.
+ * With no section structure at all, this is the whole text.
+ *
+ * @param {string} jdText raw description
+ * @returns {string} lowercased required text
+ */
+export function requiredText(jdText) {
+  const text = prepare(jdText);
+  if (!text) return '';
+  return clausesOf(text).filter((c) => !c.preferred).map((c) => c.text).join('\n');
 }
 
 /* ───────────────────────── years of experience ───────────────────────── */
@@ -235,9 +260,18 @@ function toNumber(token) {
  * Required years phrases in one clause, [{years, index}], company-age,
  * timeline and implausible numbers removed.
  */
+/** "Experience (years): 5", "Years of experience: 4" — a form field, not prose. */
+const KEY_VALUE_YEARS = /\b(?:years?\s+of\s+experience|experience\s*\(\s*(?:years?|yrs?)\s*\)|(?:years?|yrs?)\s+of\s+exp(?:erience)?|minimum\s+experience)\s*[:=]\s*(\d{1,2})\b/g;
+
 function yearsIn(clauseText) {
   if (!clauseText.includes('year') && !clauseText.includes('yr')) return [];
   const found = [];
+  KEY_VALUE_YEARS.lastIndex = 0;
+  let kv;
+  while ((kv = KEY_VALUE_YEARS.exec(clauseText)) !== null) {
+    const n = Number(kv[1]);
+    if (n >= 1 && n <= MAX_PLAUSIBLE_FLOOR) found.push({ years: n, index: kv.index });
+  }
   const experienceInClause = EXPERIENCE_WORD.test(clauseText);
   YEARS_PHRASE.lastIndex = 0;
   let m;
@@ -291,6 +325,12 @@ function degreeIn(clauseText) {
   // "5+ years (or Ph.D. with 3+ years)": a degree offered as an ALTERNATIVE to
   // experience, with no lower degree before it, is a shortcut, not a floor.
   if (best && /(?:\bor|\()\s*$/.test(clauseText.slice(Math.max(0, best.index - 6), best.index))) return null;
+  // "Degree in Accounting, Finance or related field" names no level; the
+  // ordinary reading is a bachelor's. Only when no level was named at all.
+  if (!best) {
+    const generic = /\b(?:a\s+)?(?:college\s+)?degree\s+in\b/.exec(clauseText);
+    if (generic) best = { level: DEGREE_LEVELS.bachelor, index: generic.index };
+  }
   return best;
 }
 
@@ -492,6 +532,57 @@ export function candidateDegreeLevel(candidate = {}) {
   return best;
 }
 
+/* ───────────────────────── licences and credentials ───────────────────────── */
+
+/**
+ * Credentials a posting can REQUIRE that no amount of fit makes up for: a
+ * nurse practitioner role scored 88, Priority, for a registered nurse because
+ * nothing read "Active Nurse Practitioner license required". Each entry is the
+ * requirement as written and the evidence that the candidate holds it. Only a
+ * clause that says required/must/active/current counts, and never a preferred
+ * one, so "CPA preferred" is not a floor.
+ */
+const CREDENTIALS = Object.freeze([
+  { label: 'a nurse practitioner license', re: /\b(?:nurse\s+practitioner|aprn|acnp(?:-bc)?|agacnp(?:-bc)?|fnp(?:-bc)?)\b/, held: /\b(?:nurse\s+practitioner|np|aprn|acnp|agacnp|fnp)\b/ },
+  { label: 'a CPA license', re: /\bcpa\b/, held: /\bcpa\b/ },
+  { label: 'a professional engineer (PE) license', re: /\b(?:pe\s+licen[cs]e|professional\s+engineer(?:ing)?\s+licen[cs]e|licensed\s+professional\s+engineer)\b/, held: /\b(?:pe|professional\s+engineer)\b/ },
+  { label: 'a pharmacist license', re: /\b(?:pharmacist|rph)\s+licen[cs]e\b|\blicensed\s+pharmacist\b/, held: /\b(?:pharmacist|rph|pharm\.?\s?d)\b/ },
+  { label: 'a DEA registration', re: /\bdea\s+(?:registration|licen[cs]e|number)\b/, held: /\bdea\b/ },
+  { label: 'an RN license', re: /\b(?:rn|registered\s+nurse)\s+licen[cs]e\b|\blicensed\s+(?:as\s+an?\s+)?(?:rn|registered\s+nurse)\b/, held: /\b(?:rn|registered\s+nurse)\b/ },
+  { label: 'admission to the bar', re: /\b(?:bar\s+admission|admitted\s+to\s+(?:practice|the\s+\w+\s+bar|the\s+bar)|licensed\s+attorney|active\s+bar\s+membership)\b/, held: /\b(?:bar|attorney|esq)\b/ },
+  { label: 'a CFA charter', re: /\bcfa\s+(?:charter|charterholder|designation)\b/, held: /\bcfa\b/ },
+]);
+const REQUIRED_CUE = /\b(?:required|requires?|must|mandatory|active|current|valid|unrestricted)\b/;
+
+/**
+ * Required credentials a description names that the candidate's stated
+ * certifications, skills and degrees do not show. Null when the candidate has
+ * stated no certifications at all (nothing to compare: unknown, not unmet).
+ *
+ * @param {string} jdText
+ * @param {object} candidate
+ * @returns {string[]|null} labels of the missing credentials
+ */
+export function missingCredentials(jdText, candidate = {}) {
+  const certs = candidate?.certifications ?? candidate?.background?.certifications;
+  if (!Array.isArray(certs) || !certs.length) return null;
+  const education = candidate?.background?.education ?? candidate?.education;
+  const stack = candidate?.technicalStack ? Object.values(candidate.technicalStack).flat() : [];
+  const have = normalizeText([...certs, ...stack,
+    ...(Array.isArray(education) ? education.map((e) => (typeof e === 'string' ? e : e?.degree)) : [])]
+    .filter((t) => typeof t === 'string').join(' \n '));
+  const text = prepare(jdText);
+  if (!text) return [];
+  const missing = new Set();
+  for (const clause of clausesOf(text)) {
+    if (clause.preferred || !REQUIRED_CUE.test(clause.text)) continue;
+    for (const cred of CREDENTIALS) {
+      if (cred.re.test(clause.text) && !cred.held.test(have)) missing.add(cred.label);
+    }
+  }
+  return [...missing];
+}
+
 /** A candidate who has stated they hold a clearance. */
 function candidateHoldsClearance(candidate = {}) {
   const v = candidate?.securityClearance ?? candidate?.workAuthorization?.securityClearance;
@@ -553,6 +644,21 @@ export function assessEligibility(job = {}, candidate = {}, { now = new Date(), 
     }
   }
 
+  // Only a MISSING credential is a judgement; none required says nothing
+  // about whether the rest of the posting's floor is met.
+  const credentials = missingCredentials(job.jdText, candidate);
+  if (credentials?.length) {
+    judged = true; ineligible = true; blocking = true;
+    for (const label of credentials) reasons.push(`requires ${label}`);
+  }
+
+  // An ADVANCED degree floor (master's or above, no "or equivalent") that the
+  // profile cannot answer is not a reason to rank a role at the top: a PhD
+  // research post scored 90, Priority, for an engineer whose profile lists no
+  // education. Reported so the tier can be held back; never a penalty.
+  const advancedUnknown = Boolean(degree && !degree.equivalent && degree.level >= DEGREE_LEVELS.master && haveDegree === null);
+  if (advancedUnknown) reasons.push(`asks for ${degree.label}, which your profile does not state ("${degree.evidence}")`);
+
   if (exclusions && !candidateHoldsClearance(candidate)) {
     const clearance = hardClearanceRequirement(normalizeText([job.title, job.jdText].join(' \n ')), exclusions);
     if (clearance) {
@@ -579,6 +685,7 @@ export function assessEligibility(job = {}, candidate = {}, { now = new Date(), 
     reasons,
     gapYears,
     blocking,
+    advancedUnknown,
     requirements: {
       years: years?.years ?? null,
       yearsEvidence: years?.evidence ?? null,

@@ -7,14 +7,14 @@ import { applyFilterObject, clearFilter, filterValue, resetFilters, setFilterVal
 import { loadSections, renderTabs } from './analytics.js';
 import { loadBoard } from './board.js';
 import { cssEscape, loadDetail, openResumePreview, renderDetail, saveNote, selectJob } from './detail.js';
-import { closeDialog, openDialog, runPendingAlt, runPendingConfirm } from './dialogs.js';
+import { closeDialog, openDialog, requestClose, runPendingAlt, runPendingConfirm } from './dialogs.js';
 import { autofillOne, checkLink, sweepClosedPostings, fillProfileFromResume, decide, patchRow, prepareOne, runPhase, scheduleRefresh, simpleAction } from './mutations.js';
-import { setView, todayAct } from './today.js';
+import { scheduleTodayReload, setView, todayAct } from './today.js';
 import { batchApprove, batchAutofill, batchDecide, batchPrepare, clearSelection, reasonHandlers, showCompare, toggleSelect } from './selection.js';
 import { openDocuments, openReports } from './reports.js';
 import { openDataQuality, saveFreshness, startEnrichment, stopEnrichment, toggleEnrichment } from './dataQuality.js';
 import { adoptResumeSelection, chooseResumeProfile, openMasterResume, openMergePicker, reconsiderResumeChoice, renderMasterResume, restoreMasterVersion, selectedAdoptTitles, submitMergeSelection } from './master.js';
-import { download, openHealth, openProfile, saveAllAnswers, saveProfileDetails, saveQuestionAnswer, setQuestionStatus } from './profile.js';
+import { backupNow, download, openHealth, openProfile, saveAllAnswers, saveProfileDetails, saveQuestionAnswer, setQuestionStatus } from './profile.js';
 import { applyRunGate, openRuns, pollRun, setRunDetails } from './runs.js';
 import { closeMainMenu, toggleMenu } from './menus.js';
 import { applyViewPrefs, hiddenColumns, onFilterChange, savePreference, setFilterSheet, syncThemeControl } from './main.js';
@@ -25,11 +25,41 @@ import { localDay } from './detail.js';
 import { openChangelog } from './changelog.js';
 import { copyEmail, downloadEmailDraft, openEmailJobs, openInMailApp } from './emailJobs.js';
 import { activeProfileId, addAnyway, loadProfiles, openAddProfile, openEditProfile, openRemoveProfile, removePerson, removeRole, savePerson, switchProfile } from './profiles.js';
+import { rewriteActions } from './rewrites.js';
+import { versionActions } from './versions.js';
+import { inboxActions } from './inbox.js';
+import { rerankActions } from './rerank.js';
+import { LETTER_BUSY_ACTIONS, letterActions } from './letters.js';
+
+/**
+ * Which optional tools are set up (GET /api/features). Fetched once; items
+ * marked data-feature stay hidden unless their tool is ready, and stay hidden
+ * if the answer never comes.
+ */
+let features = null;
+export function loadFeatures() {
+  features ??= api('/api/features')
+    .then((on) => {
+      for (const node of document.querySelectorAll('[data-feature]')) node.hidden = !on?.[node.dataset.feature];
+    })
+    .catch(() => { features = null; });
+  return features;
+}
 
 /* ────────────────────── event delegation ────────────────────── */
 
 export const ACTIONS = {
   reload: () => location.reload(),
+  // Grounded rewrite suggestions in a job's detail (P1-2).
+  ...rewriteActions,
+  // Document versions (P2-2).
+  ...versionActions,
+  // Email replies (P1-7).
+  ...inboxActions,
+  // Rank top matches by meaning (P2-1).
+  ...rerankActions,
+  // Your materials: master cover letter, a job's letter, resume comparison.
+  ...letterActions,
   // Applications workspace. None of these approves or submits: outcomes and
   // follow-ups are validated server-side and only ever follow a submission.
   'set-apps-layout': (target) => setAppsLayout(target.dataset.layout),
@@ -64,7 +94,13 @@ export const ACTIONS = {
     applyRunGate(state.lastRunStatus);
   },
   'toggle-menu': () => toggleMenu($('mainMenu')),
-  'toggle-activity-menu': () => toggleMenu($('activityMenu')),
+  'toggle-activity-menu': async () => {
+    const pop = $('activityMenu');
+    // Optional tools appear only once they are set up; settle that BEFORE the
+    // menu opens so its items never shift under the pointer.
+    if (pop.dataset.open !== 'true') await loadFeatures();
+    toggleMenu(pop);
+  },
   'toggle-account-menu': () => {
     toggleMenu($('accountMenu'));
     // Opened before the profile list arrived (a cold start): fetch it now.
@@ -114,6 +150,7 @@ export const ACTIONS = {
     if (set.has(key)) set.delete(key); else set.add(key);
     applyViewPrefs({ hidden: set });
   },
+  'open-learn': () => window.open('/learn/', '_blank', 'noopener'),
   'open-reports': openReports,
   'open-data-quality': openDataQuality,
   'save-freshness': saveFreshness,
@@ -144,7 +181,6 @@ export const ACTIONS = {
   },
   'delete-search-profile': (target) => openRemoveProfile(target?.dataset?.profileId),
   'open-add-profile': () => openAddProfile(),
-  'open-remove-profile': () => openRemoveProfile(),
   'remove-person': () => removePerson(),
   'open-edit-profile': (target) => openEditProfile(target?.dataset?.profileId).catch((err) => toast(err.message, 'bad')),
   'save-person': () => savePerson(),
@@ -206,7 +242,9 @@ export const ACTIONS = {
     const box = $('profileBody').querySelector(`[data-q-answer="${cssEscape(target.dataset.key)}"]`);
     if (!box) return;
     box.value = target.dataset.value;
-    box.focus();
+    // One choice is the answer: show which, and keep focus on the choice so
+    // the next press of Tab reaches Save.
+    for (const chip of target.parentElement.querySelectorAll('.pf-choice')) chip.setAttribute('aria-pressed', String(chip === target));
   },
   'pf-jump': (target) => {
     const section = $(target.dataset.target);
@@ -217,8 +255,23 @@ export const ACTIONS = {
   'save-answers': () => saveAllAnswers(),
   'delete-answer': (target) => saveAllAnswers({ removeId: target.dataset.id }),
   'open-health': openHealth,
+  'backup-now': backupNow,
   'export-jobs': () => download('/api/export/jobs.csv', 'jobagent_jobs.csv'),
   'export-tracker': () => download('/api/export/tracker.csv', 'job_tracker.csv'),
+  'export-calendar': () => download('/api/calendar.ics', 'jobagent-follow-ups.ics'),
+  // The cover-letter choice for one job (template instead of grounded).
+  'letter-mode': async (target) => {
+    await postJson(`/api/jobs/${encodeURIComponent(target.dataset.id)}/letter-mode`, { mode: target.dataset.mode });
+    toast(target.dataset.mode === 'template'
+      ? 'This job will use your template. Prepare it again to rebuild the letter.'
+      : 'This job will have its letter written from your resume again when it is prepared.');
+    // The detail rail never redraws a section that holds focus (so typing is
+    // never lost); this button does, so step out, redraw, then put focus on
+    // the button that replaced it.
+    target.blur();
+    await loadDetail(target.dataset.id);
+    document.querySelector('.cl-grounding [data-action="letter-mode"]')?.focus();
+  },
   'open-email-jobs': () => openEmailJobs(),
   'email-copy': () => copyEmail(),
   'email-open': () => openInMailApp(),
@@ -275,15 +328,21 @@ export const ACTIONS = {
   // 'change' listener below so keyboard toggling works identically, and
   // resolving to the input here still stops the row's select from firing.
   'clear-selection': clearSelection,
-  'batch-autofill': batchAutofill,
+  'batch-autofill': () => batchAutofill(),
+  'signin-retry': (target) => batchAutofill({ ids: String(target.dataset.ids ?? '').split(',').filter(Boolean) }),
   'batch-prepare': batchPrepare,
   'batch-approve': batchApprove,
   'batch-decide': (target) => batchDecide(target.dataset.decision),
+  'proposal-archive': async (target) => {
+    await batchDecide('archived', { ids: String(target.dataset.ids ?? '').split(',').filter(Boolean) });
+    scheduleTodayReload(300);
+  },
   compare: showCompare,
 
   decide: (target) => decide(target.dataset.id, target.dataset.decision),
   approve: (target) => simpleAction(target.dataset.id, 'approve', 'Packet approved'),
   'reject-packet': (target) => simpleAction(target.dataset.id, 'reject-packet', 'Packet rejected'),
+  unapprove: (target) => simpleAction(target.dataset.id, 'unapprove', 'Approval taken back: the packet is waiting for your review again'),
   assist: (target) => simpleAction(target.dataset.id, 'assist', 'Browser opening — it stops before Submit'),
   'autofill-one': (target) => autofillOne(target.dataset.id),
   'prepare-one': (target) => prepareOne(target.dataset.id),
@@ -309,9 +368,15 @@ export const ACTIONS = {
   },
   'submit-link': submitLink,
   'open-submit-dialog': (target) => openSubmitDialog(target.dataset.id),
+  'confirm-went-through': (target) => settleUnverified(target.dataset.id, true),
+  'not-submitted': (target) => settleUnverified(target.dataset.id, false),
   'set-view': (target) => setView(target.dataset.view, { nav: true }),
   'today-review': (target) => selectJob(target.dataset.id, { user: true }),
   'today-act': (target) => todayAct(target),
+  'today-decide': async (target) => {
+    await decide(target.dataset.id, target.dataset.decision);
+    scheduleTodayReload(300);
+  },
   'copy-text': (target) => copyText(target.dataset.text, 'Copied'),
   'confirm-submitted': confirmSubmitted,
   'confirm-go': runPendingConfirm,
@@ -322,7 +387,8 @@ export const ACTIONS = {
     if (!handler) return;
     try { await handler(target.dataset.reason); } catch (err) { toast(err.message, 'bad'); }
   },
-  'close-dialog': (target) => closeDialog(target.closest('dialog')),
+  // Close, × and Cancel: the person asked, so unsaved text gets a question first.
+  'close-dialog': (target) => requestClose(target.closest('dialog')),
 };
 
 /**
@@ -335,13 +401,17 @@ export const BUSY_ACTIONS = new Set([
   'profile-from-resume-create', 'profile-from-resume-keep', 'confirm-merge-selection',
   'profile-from-resume-reconsider', 'adopt-resume-titles', 'adopt-resume-skills',
   'restore-master', 'save-profile', 'save-question-answer', 'dismiss-question',
-  'save-answers', 'delete-answer', 'export-jobs', 'export-tracker', 'open-email-jobs', 'email-copy', 'clear-role-search',
-  'batch-autofill', 'batch-prepare', 'batch-approve', 'batch-decide', 'compare',
+  'save-answers', 'delete-answer', 'backup-now',
+  'propose-rewrites', 'rewrite-accept', 'rewrite-reject', 'rewrite-accept-all', 'refine-rewrites',
+  'compare-versions', 'restore-version', 'letter-mode', 'inbox-sync', 'inbox-record', 'inbox-dismiss', 'inbox-draft', 'run-rerank', 'export-jobs', 'export-tracker', 'open-email-jobs', 'email-copy', 'clear-role-search',
+  'batch-autofill', 'batch-prepare', 'batch-approve', 'batch-decide', 'compare', 'signin-retry', 'proposal-archive',
   'decide', 'approve', 'reject-packet', 'assist', 'autofill-one', 'prepare-one',
-  'check-link', 'save-note', 'today-act', 'decision-reason', 'fill-profile-from-resume', 'sweep-postings',
+  'check-link', 'save-note', 'today-act', 'today-decide', 'decision-reason', 'fill-profile-from-resume', 'sweep-postings',
   'submit-add-url', 'submit-job-search', 'submit-link', 'confirm-submitted', 'confirm-go',
+  'confirm-went-through', 'not-submitted',
   'ws-act', 'ws-record', 'ws-undo-outcome', 'ws-record-form', 'ws-followup', 'ws-followup-set',
   'save-person', 'confirm-alt', 'person-add-anyway', 'remove-person',
+  ...LETTER_BUSY_ACTIONS,
 ]);
 
 /** Run one ACTIONS entry, busy-guarded when it mutates. */
@@ -546,6 +616,26 @@ export async function submitLink() {
     }
     scheduleRefresh();
   } catch (err) { msg.className = 'st-blocked'; msg.textContent = err.message; }
+}
+
+/**
+ * Settle an unconfirmed submission without the dialog. "I submitted it
+ * myself" with no number lands here, and offering only that same button
+ * again went in a circle: nothing but a confirmation number could finish it.
+ * "Yes" is your confirmation; "No" takes it back to finishing it.
+ */
+export async function settleUnverified(id, wentThrough) {
+  try {
+    if (wentThrough) {
+      await postJson(`/api/jobs/${encodeURIComponent(id)}/mark-submitted`, { verified: true });
+      toast('Recorded as submitted.', 'good');
+    } else {
+      await postJson(`/api/jobs/${encodeURIComponent(id)}/not-submitted`, {});
+      toast('Not counted as submitted. Finish it in the browser, then retry auto-fill or record it.');
+    }
+    if (state.selectedId === id) await loadDetail(id);
+    scheduleRefresh(0);
+  } catch (err) { toast(err.message, 'bad'); }
 }
 
 export async function confirmSubmitted() {

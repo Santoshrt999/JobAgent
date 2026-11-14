@@ -9,6 +9,7 @@
  */
 
 import { fetchUrl } from './genericPublicPage.js';
+import { safeFetch } from '../../utils/safeFetch.js';
 
 export const adapterId = 'dice';
 
@@ -18,7 +19,7 @@ export const adapterId = 'dice';
  * @returns {Promise<{ jobs: object[], errors: object[] }>}
  */
 export async function run(source = {}, ctx = {}) {
-  const { fetchImpl = fetch, rateLimiter, maxRetries = 3 } = ctx;
+  const { fetchImpl = safeFetch, rateLimiter, maxRetries = 3 } = ctx;
   const jobs = [];
   const errors = [];
   const urls = Array.isArray(source.urls) ? source.urls : [];

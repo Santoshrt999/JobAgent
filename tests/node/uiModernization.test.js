@@ -136,7 +136,10 @@ describe('job detail: one primary action, evidence first, actions grouped', () =
     for (const action of ['check-link', 'open-link-dialog', 'reject-packet', 'open-submit-dialog']) {
       expect(block, action).toContain(`'data-action': '${action}'`);
     }
-    expect(block).toContain("['archived', 'Archive', false], ['clear', 'Clear', false]");
+    // Archive stays a secondary action. Undoing a decision is deliberately NOT
+    // tucked away: it is shown in view, named for what it undoes (UNDO_LABEL).
+    expect(block).toContain("['archived', 'Archive', false], ['clear', UNDO_LABEL[current], true]");
+    expect(detail).toMatch(/UNDO_LABEL = Object\.freeze\(\{[\s\S]*archived: 'Unarchive'/);
   });
 });
 

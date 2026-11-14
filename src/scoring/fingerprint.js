@@ -25,6 +25,7 @@ import { createHash } from 'node:crypto';
 
 import { loadRoleFamilies } from '../profile/roleFamilies.js';
 import { TITLE_MATCH_VERSION } from './titleMatch.js';
+import { SCORER_VERSION } from './scorer.js';
 import { ELIGIBILITY_VERSION, candidateYearsOfExperience, candidateDegreeLevel } from './eligibility.js';
 
 /** taxonomy object -> digest, so the taxonomy is hashed once per load. */
@@ -129,6 +130,7 @@ export function scoringFingerprintMaterial(config = {}) {
       likelySponsors: scoring.sponsorship?.likelySponsors ?? [],
     },
     payFitWeight: scoring.weights?.payFit ?? null,
+    trackFitWeight: scoring.weights?.trackFit ?? null,
     // The role-family taxonomy decides title accept/defer/reject, which gates
     // the near-miss tier; it is data in config/role_families.json, so it is
     // hashed rather than inlined.
@@ -140,6 +142,8 @@ export function scoringFingerprintMaterial(config = {}) {
     // title points with no config edit at all, so without this the incremental
     // skip would have kept every one of those stale verdicts.
     titleMatcher: TITLE_MATCH_VERSION,
+    // How a posting is read (seniority words, preferred-only skills).
+    scorer: SCORER_VERSION,
     // Eligibility compares the posting's floor with the candidate's years and
     // degree. The DERIVED values are hashed, not the raw work history: a
     // reworded bullet cannot change a verdict, but a new role, a corrected

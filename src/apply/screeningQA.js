@@ -311,7 +311,6 @@ export function lookupSkillExperience(subject, candidate) {
  * }}
  */
 export function answerScreeningQuestion(question, screeningAnswers, { choices, candidate } = {}) {
-  const text = normalizeText(question);
   const answers = effectiveAnswers(screeningAnswers);
   const defaults = screeningAnswers.defaults ?? {};
 
@@ -361,21 +360,61 @@ export function answerScreeningQuestion(question, screeningAnswers, { choices, c
     };
   }
 
-  let best = null;
-  let bestScore = 0;
-  for (const entry of answers) {
-    const score = matchScore(text, entry.patterns ?? []);
-    if (score > bestScore) {
-      bestScore = score;
-      best = entry;
-    }
-  }
+  // Match against the question being ASKED, not its follow-up or aside:
+  // "Have you worked for Acme before? If so, what was your start date?" asks
+  // about prior employment; "start date" in the follow-up must not answer it.
+  const asked = mainClause(question);
+  const askedText = normalizeText(asked);
 
-  if (!best || bestScore === 0) {
-    return askUser(defaults);
+  // Every entry that matches, strongest first; on a tie the entry listed first
+  // wins, as before. A pay answer stated per YEAR does not answer a question
+  // asked per MONTH or per HOUR, so a candidate whose pay period disagrees with
+  // the question is passed over for one that agrees.
+  const matched = [];
+  answers.forEach((entry, index) => {
+    const { score, pattern } = matchScoreDetail(askedText, entry.patterns ?? []);
+    if (score > 0) matched.push({ entry, score, pattern, index });
+  });
+  matched.sort((a, b) => b.score - a.score || a.index - b.index);
+  // The unit is often in an aside ("(In USD per month)"), so read it from the
+  // whole question, not the main clause.
+  const period = payPeriodOf(question);
+  let pick = matched.find((m) => !period || !statesPay(m.entry.answer) || payPeriodOf(m.entry.answer) === period)
+    ?? null;
+  // A pay question whose matched answer is in the wrong unit: the same pay
+  // answer in the question's unit, if one is stored and the question mentions
+  // anything it lists, is the same answer to the same question.
+  if (!pick && period && matched.some((m) => statesPay(m.entry.answer))) {
+    const full = normalizeForMatch(normalizeText(question));
+    const alt = answers.find((e) => statesPay(e.answer) && payPeriodOf(e.answer) === period
+      && (e.patterns ?? []).some((pt) => {
+        const q = normalizeForMatch(pt).replace(/[^a-z0-9+#]+$/, '').trim();
+        return q && wholeWordIn(full, q);
+      }));
+    if (alt) pick = { entry: alt, score: MAX_SCATTERED_SCORE, pattern: null };
+  }
+  if (!pick) return askUser(defaults);
+  const { entry: best, score: bestScore, pattern: bestPattern } = pick;
+
+  // SENSITIVE TOPICS. A stored answer may be about the same WORDS and still not
+  // be about this question: "background check" answered "Have you ever FAILED a
+  // background check?" with "Yes", and "will you require" answered "Will you
+  // require an ACCOMMODATION?" with the sponsorship answer. For these topics an
+  // answer is used only when it was saved for this very question (a pattern
+  // that covers every content word of it) or is explicitly tagged for the topic.
+  const topic = sensitiveTopic(asked);
+  if (topic && !entryCovers(best, topic, bestPattern, askedText)) {
+    return { ...askUser(defaults), action: 'ask_user', reason: `${topic.replace(/_/g, ' ')} question — answer it yourself` };
   }
 
   const answer = String(best.answer ?? '');
+  // A question about ANOTHER COUNTRY ("authorized to work in Canada?",
+  // "willing to relocate to Germany?") is not answered by a statement about the
+  // United States. Unless the stored answer names that country, ask.
+  const elsewhere = foreignCountryIn(asked);
+  if (elsewhere && !normalizeText(answer).includes(elsewhere)) {
+    return { ...askUser(defaults), action: 'ask_user', reason: `asks about ${elsewhere}, which your saved answer does not mention` };
+  }
   // Safety net: refuse to emit any answer that CONTRADICTS the candidate's own
   // stated work authorization — in either direction.
   if (isForbidden(answer, candidateRequiresSponsorship(candidate))) {
@@ -384,7 +423,9 @@ export function answerScreeningQuestion(question, screeningAnswers, { choices, c
 
   // For multiple-choice questions, only answer if our value maps to a choice.
   if (Array.isArray(choices) && choices.length) {
-    const mapped = mapToChoice(answer, best.type, choices);
+    const aboutAuthorization = (best.patterns ?? []).some((p) => AUTHORIZATION_QUESTION.test(String(p)));
+    const mapped = mapToChoice(answer, best.type, choices)
+      ?? (aboutAuthorization ? authorizationChoice(asked, answer, choices, { status: candidate?.workAuthorization?.status }) : null);
     if (mapped === null) return askUser(defaults);
     return { answered: true, action: 'answer', matchedId: best.id, answer: mapped, type: best.type ?? 'text', confidence: bestScore };
   }
@@ -429,7 +470,7 @@ export function effectiveAnswers(screeningAnswers = {}) {
       .map((id) => String(id ?? '').toLowerCase()).filter(Boolean),
   );
   const derivedIds = new Set(derived.map((e) => String(e?.id ?? '').toLowerCase()).filter(Boolean));
-  if (!derived.length && !owned.size) return stored;
+  if (!derived.length && !owned.size && !screeningAnswers.profileId) return stored;
 
   // An owned question the user answered THEMSELVES, under the profile that is
   // active now, is still their answer and is still used. `profileId` is stamped
@@ -440,6 +481,10 @@ export function effectiveAnswers(screeningAnswers = {}) {
   const keep = (entry) => {
     const id = String(entry?.id ?? '').toLowerCase();
     if (derivedIds.has(id)) return false;       // the profile answered it itself
+    // An answer stamped as ANOTHER candidate's is theirs, whatever the question
+    // (education, EEO, clearance, prior employer): never used for this one.
+    const owner = String(entry?.profileId ?? '');
+    if (owner && activeProfileId && owner !== activeProfileId) return false;
     if (!owned.has(id)) return true;            // not a profile-owned question
     return Boolean(activeProfileId) && String(entry?.profileId ?? '') === activeProfileId;
   };
@@ -474,26 +519,156 @@ const MAX_SCATTERED_SCORE = 0.8;
  * Scattered matches must additionally cover EVERY content word and have at
  * least two of them, so a lone keyword can never drag in a whole answer.
  */
-function matchScore(text, patterns) {
+/**
+ * Words that carry no subject: stopwords plus question scaffolding. A pattern
+ * needs at least two words OUTSIDE this set to match a longer question on its
+ * own — "will you require" (one: "require") answered accommodation and
+ * relocation-assistance questions with the sponsorship answer, "per month"
+ * (one: "month") answered "How many hours per month can you travel?" with a
+ * monthly salary, and "how many years" (one: "years") answered "How many years
+ * have you lived at your current address?" with a career total.
+ */
+const SCAFFOLD = new Set([
+  ...STOPWORDS, 'how', 'many', 'much', 'what', 'which', 'when', 'where', 'why', 'who', 'whom',
+  'please', 'describe', 'provide', 'enter', 'list', 'per', 'any', 'so', 'yes', 'no', 'not',
+]);
+
+/** Content words of normalized, singularized text. */
+function contentWordsOf(normalized) {
+  return normalized.split(' ')
+    .map((w) => w.replace(/^[^a-z0-9+#]+|[^a-z0-9+#]+$/g, ''))
+    .filter((w) => w && !SCAFFOLD.has(w));
+}
+
+/**
+ * The strongest pattern match, and which pattern made it.
+ * @returns {{score: number, pattern: string|null}}
+ */
+function matchScoreDetail(text, patterns) {
   let best = 0;
+  let bestPattern = null;
   // Both sides are singularized so a plural phrasing matches a singular pattern
   // (see normalizeForMatch). "What are your salary expectations?" used to miss.
   const matchText = normalizeForMatch(text);
+  const whole = matchText.replace(/[^a-z0-9+#]+$/, '').trim();
+  const questionWords = new Set(contentWordsOf(matchText));
+  const questionTopic = sensitiveTopic(text);
   for (const pattern of patterns) {
-    const p = normalizeForMatch(pattern);
+    // A pattern ending in "?" or "." can never satisfy the word boundary.
+    const p = normalizeForMatch(pattern).replace(/[^a-z0-9+#]+$/, '').trim();
     if (!p) continue;
+    const content = contentWordsOf(p);
+    // One subject word is enough only when it is the WHOLE question
+    // ("Salary?" against "salary"), when the pattern IS the question ("Why
+    // us?"), or when it names the same sensitive topic the question is about
+    // (an EEO answer saved under "race" for "Race/Ethnicity").
+    const thin = content.length < 2
+      && !(content.length === 1 && questionWords.size === 1)
+      && p !== whole
+      && !(questionTopic && sensitiveTopic(p) === questionTopic);
     // 1. Exact contiguous phrase — highest confidence.
     if (wholeWordIn(matchText, p)) {
-      best = Math.max(best, 1);
+      if (thin) continue;
+      if (best < 1) { best = 1; bestPattern = pattern; }
       continue;
     }
     // 2. Scattered content words — every one must be present, min two.
-    const content = p.split(' ').filter((w) => w && !STOPWORDS.has(w));
-    if (content.length < 2) continue;
-    const hit = content.filter((w) => wholeWordIn(matchText, w)).length;
-    if (hit === content.length) best = Math.max(best, MAX_SCATTERED_SCORE);
+    const scattered = p.split(' ').filter((w) => w && !STOPWORDS.has(w));
+    if (scattered.length < 2 || thin) continue;
+    const hit = scattered.filter((w) => wholeWordIn(matchText, w)).length;
+    if (hit === scattered.length && best < MAX_SCATTERED_SCORE) { best = MAX_SCATTERED_SCORE; bestPattern = pattern; }
   }
-  return best;
+  return { score: best, pattern: bestPattern };
+}
+
+/**
+ * The part of a question that is actually being asked: the first sentence
+ * when a follow-up comes after it ("...? If so, ..."), with parenthetical
+ * asides removed ("(subject to background check)"). Falls back to the whole
+ * text when that would leave nothing.
+ *
+ * @param {string} question
+ * @returns {string}
+ */
+export function mainClause(question) {
+  const raw = String(question ?? '');
+  const noAside = raw.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim() || raw;
+  const firstQ = noAside.indexOf('?');
+  if (firstQ > 0 && noAside.slice(firstQ + 1).trim().length > 0) {
+    const head = noAside.slice(0, firstQ + 1).trim();
+    if (head.replace(/[^a-z]/gi, '').length >= 8) return head;
+  }
+  return noAside;
+}
+
+/**
+ * Topics where a wrong answer is worse than none, and where sharing words with a
+ * stored answer says nothing about meaning. Each maps to a topic id an answer
+ * entry may declare in `topics` to be used for it.
+ */
+const SENSITIVE_TOPICS = [
+  ['negative_history', /\b(?:fail(?:ed|ure)?\s+(?:a|an|any|the)?\s*(?:background|drug|screen)|denied|convicted|conviction|terminated|fired|dismissed|discharged|refused|revoked|disciplin\w*|suspended|arrested|felon\w*|misdemeanou?r|guilty|debarred|sanctioned|pled|pleaded)\b/i],
+  ['criminal_history', /\bcriminal\b/i],
+  ['accommodation', /\b(?:accommodations?|disabilit(?:y|ies)|disabled|medical\s+condition|health\s+condition|impairment)\b/i],
+  ['age', /\b(?:age|date\s+of\s+birth|birth\s*date|born|years\s+old)\b/i],
+  ['demographic', /\b(?:gender|sex|race|racial|ethnic\w*|veteran|sexual\s+orientation|marital|pregnan\w*|religio\w*|national\s+origin)\b/i],
+];
+
+/** The sensitive topic a question is about, or null. */
+export function sensitiveTopic(question) {
+  const text = String(question ?? '');
+  for (const [id, re] of SENSITIVE_TOPICS) if (re.test(text)) return id;
+  return null;
+}
+
+/**
+ * May this entry answer a question on a sensitive topic? Only when it is
+ * tagged for the topic, or the pattern that matched covers every content word
+ * of the question (the user saved an answer to exactly this question).
+ */
+function entryCovers(entry, topic, pattern, askedText) {
+  const topics = Array.isArray(entry?.topics) ? entry.topics.map((t) => String(t).toLowerCase()) : [];
+  if (topics.includes(topic)) return true;
+  // An answer whose OWN patterns are about this topic was saved for it
+  // ("race", "ethnicity" for an EEO answer). One that merely shares words
+  // with the question ("will you require", "background check") was not.
+  if ((entry?.patterns ?? []).some((p) => sensitiveTopic(p) === topic)) return true;
+  if (!pattern) return false;
+  const have = new Set(contentWordsOf(normalizeForMatch(pattern)));
+  const need = contentWordsOf(normalizeForMatch(askedText));
+  return need.length > 0 && need.every((w) => have.has(w));
+}
+
+/**
+ * Countries (other than the United States) a question may ask about. Matched
+ * as whole words on normalized text; the returned name is normalized too.
+ */
+const OTHER_COUNTRIES = [
+  'canada', 'united kingdom', 'uk', 'england', 'scotland', 'ireland', 'germany', 'france', 'spain',
+  'portugal', 'italy', 'netherlands', 'belgium', 'switzerland', 'austria', 'sweden', 'norway',
+  'denmark', 'finland', 'poland', 'czech republic', 'romania', 'european union', 'eu', 'india',
+  'china', 'japan', 'singapore', 'australia', 'new zealand', 'mexico', 'brazil', 'argentina',
+  'israel', 'south africa', 'philippines', 'united arab emirates', 'uae', 'hong kong', 'korea',
+];
+
+/** The pay period a text names: 'hour', 'month', 'year', or null. */
+export function payPeriodOf(text) {
+  const t = String(text ?? '').toLowerCase();
+  if (/\b(?:per\s+hour|hourly|an\s+hour|\/\s*(?:hr|hour)\b)/.test(t)) return 'hour';
+  if (/\b(?:per\s+month|monthly|a\s+month|\/\s*mo(?:nth)?\b)/.test(t)) return 'month';
+  if (/\b(?:per\s+(?:year|annum)|annual(?:ly)?|yearly|a\s+year|\/\s*(?:yr|year)\b)/.test(t)) return 'year';
+  return null;
+}
+
+/** Does an answer state an amount of money? */
+function statesPay(answer) {
+  return /\$\s*\d|\b\d[\d,.]*\s*(?:k\b|usd|dollars|per\s+(?:hour|month|year))/i.test(String(answer ?? ''));
+}
+
+/** The non-US country a question names, or null. */
+export function foreignCountryIn(question) {
+  const text = normalizeText(question);
+  return OTHER_COUNTRIES.find((c) => wholeWordIn(text, c)) ?? null;
 }
 
 /**
@@ -528,6 +703,64 @@ export function mapToChoice(answer, type, choices) {
     return choice && (wholeWordIn(norm, choice) || wholeWordIn(choice, norm));
   });
   return partial ?? null;
+}
+
+/** A question asking ONLY whether the candidate may work (in the US). */
+const AUTHORIZATION_QUESTION = /\b(?:legally\s+)?(?:authori[sz]ed|eligible|permitted|entitled)\s+to\s+work\b|\bwork\s+authori[sz]ation\b|\bright\s+to\s+work\b/i;
+/** ...and one that also asks about sponsorship or a visa is a different question. */
+const SPONSORSHIP_WORDS = /\b(?:sponsor\w*|visas?|h-?1-?b|opt|cpt|green\s*card|immigration)\b/i;
+/**
+ * Narrower questions a visa holder may have to answer "No" to, although they
+ * are authorized to work: "for ANY employer", "without restriction", "are you
+ * a citizen or permanent resident".
+ */
+const RESTRICTED_AUTHORIZATION = /\bany\s+(?:u\.?s\.?\s+)?employer\b|\bwithout\s+(?:any\s+)?restrictions?\b|\bunrestricted\b|\bcitizen\w*\b|\bpermanent\s+resident\b|\bnational\b/i;
+/** An answer that STATES authorization ("... authorized to work in the United States ..."). */
+const STATES_AUTHORIZED = /\b(?:authori[sz]ed|eligible|permitted)\s+to\s+work\b/i;
+const DENIES_AUTHORIZED = /\b(?:not|n't|never|un)\s*(?:currently\s+|yet\s+|legally\s+)?(?:authori[sz]ed|eligible|permitted)\b|\bno\s+(?:work\s+)?authori[sz]ation\b/i;
+
+/**
+ * "Yes" for a Yes/No "Are you legally authorized to work in the United
+ * States?" when the saved answer states that the candidate is.
+ *
+ * The derived work-authorization answer is a sentence ("H-1B — authorized to
+ * work in the United States, and will need continued visa sponsorship."), and
+ * mapToChoice only reads a LEADING yes/no, so the question went to the person
+ * although the profile answers it (2026-11-12, a Rippling posting). Only the
+ * affirmative is inferred, never "No"; never for a question that also asks
+ * about sponsorship or a visa (that one has two answers), and never when the
+ * answer denies authorization anywhere. Another country is refused earlier
+ * (foreignCountryIn).
+ *
+ * @returns {string|null} the "Yes" choice, or null
+ */
+export function authorizationChoice(question, answer, choices = [], { status } = {}) {
+  const q = String(question ?? '');
+  if (!AUTHORIZATION_QUESTION.test(q) || SPONSORSHIP_WORDS.test(q) || RESTRICTED_AUTHORIZATION.test(q)) return null;
+  const a = String(answer ?? '');
+  if (DENIES_AUTHORIZED.test(a)) return null;
+  // The answer says so, or the profile's stated status is one that grants US
+  // work authorization (see statusGrantsWork). The profile deriver already
+  // states "<status> — authorized to work in the United States" from the
+  // status alone; a person's own wording ("Currently on H-1B; requires
+  // transfer and continued sponsorship.") says the same without those words.
+  if (!STATES_AUTHORIZED.test(a) && !statusGrantsWork(status)) return null;
+  return choices.find((c) => /^(yes|y)\b/i.test(String(c).trim())) ?? null;
+}
+
+/**
+ * US immigration statuses that carry authorization to work, as a profile
+ * states them. A status that is pending, expired, applied for or sought is
+ * not one, and neither is anything not on this list (J-1, CPT, F-1 without
+ * OPT, B-1/B-2): those are left to the person.
+ */
+const WORK_AUTHORIZING_STATUS = /\b(?:u\.?s\.?\s+)?citizen\b|\bpermanent\s+resident\b|\bgreen\s*card\b|\blpr\b|\bh-?1-?b1?\b|\bh-?4\s*ead\b|\bl-?1[ab]?\b|\bl-?2\s*ead\b|\bo-?1\b|\btn\b|\be-?3\b|\bead\b|\b(?:stem\s+)?opt\b|\basylee\b|\brefugee\b|\btps\b|\bdaca\b/i;
+const NOT_YET_STATUS = /\b(?:pending|expired?|expiring|lapsed|applied|applying|apply|awaiting|seeking|need(?:s|ed)?|will\s+need|requires?\s+(?:a\s+)?(?:new|initial)|not|no)\b/i;
+
+/** Does the profile's stated work status grant authorization to work in the US? */
+export function statusGrantsWork(status) {
+  const s = String(status ?? '').trim();
+  return Boolean(s) && WORK_AUTHORIZING_STATUS.test(s) && !NOT_YET_STATUS.test(s);
 }
 
 /**

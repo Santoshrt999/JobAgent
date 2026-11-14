@@ -4,11 +4,12 @@
  * checked as shipped source, like uiGlassRefinement.test.js.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+
 
 import { CHANGELOG, CHANGELOG_GROUPS } from '../../src/dashboard/public/assets/js/changelog-data.js';
+import { readText } from './helpers/readText.js';
 
-const read = (rel) => readFileSync(new URL(`../../src/dashboard/public/${rel}`, import.meta.url), 'utf8');
+const read = (rel) => readText(new URL(`../../src/dashboard/public/${rel}`, import.meta.url));
 const html = read('index.html');
 const css = read('assets/css/app.css');
 

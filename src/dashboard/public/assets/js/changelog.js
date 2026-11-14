@@ -17,8 +17,10 @@ export function renderChangelog(releases = CHANGELOG) {
   const host = el('div', { class: 'cl' });
   for (const release of releases) {
     const section = el('section', { class: 'cl-release', 'aria-labelledby': `cl-${release.date}` });
-    section.append(el('h3', { id: `cl-${release.date}` },
-      el('time', { datetime: release.date, text: longDate(release.date) })));
+    const heading = el('h3', { id: `cl-${release.date}` },
+      el('time', { datetime: release.date, text: longDate(release.date) }));
+    if (release.version) heading.append(el('span', { class: 'cl-version', text: ` · ${release.version}` }));
+    section.append(heading);
     if (release.summary) section.append(el('p', { class: 'cl-summary', text: release.summary }));
     for (const [key, title] of CHANGELOG_GROUPS) {
       const items = release.groups[key] ?? [];

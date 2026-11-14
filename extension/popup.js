@@ -47,8 +47,12 @@ $('fill').addEventListener('click', async () => {
     const expected = safeHost(payload.job.url);
     const actual = safeHost(tab.url);
     if (isLoopback(actual)) {
-      show('Opening the approved posting…', true);
-      await chrome.tabs.update(tab.id, { url: payload.job.url });
+      // In a NEW tab: replacing the dashboard tab lost the person's place in
+      // it (filters, scroll, an open job). And only a web address is opened —
+      // the URL comes from the job record, not from this extension.
+      if (!isWebUrl(payload.job.url)) throw new Error('This job has no web address to open.');
+      show('Opening the approved posting in a new tab…', true);
+      await chrome.tabs.create({ url: payload.job.url, openerTabId: tab.id });
       return;
     }
 
@@ -176,4 +180,6 @@ function jobIdFromDashboardUrl(value) {
 function isLoopback(host) { return host === '127.0.0.1' || host === 'localhost'; }
 function isAggregatorHost(host) { return /(^|\.)(linkedin|indeed|glassdoor|dice|ziprecruiter)\./i.test(host || ''); }
 function safeHost(value) { try { return new URL(value).hostname; } catch { return ''; } }
+/** Only an http(s) address may be opened from a job record. */
+function isWebUrl(value) { try { return /^https?:$/.test(new URL(value).protocol); } catch { return false; } }
 function show(text, ok = null) { $('status').textContent = text; $('status').className = ok === true ? 'ok' : ok === false ? 'error' : ''; }

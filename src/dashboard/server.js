@@ -71,86 +71,79 @@ import {
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { ensureResumePdf } from '../resume/pdfPreview.js';
-import { checkJobLink } from './linkHealth.js';
 import { acquireRunLock, RunLockError } from '../utils/runLock.js';
 import { gzipSync } from 'node:zlib';
 
 import { buildRca, sanitizeErrorMessage, inferScope } from '../utils/failureRca.js';
-import { isPublicHttpUrl } from '../utils/publicUrl.js';
 import { assertInsideDirectory, isInsideDirectory } from '../utils/pathSafe.js';
 
-import {
-  dashboardStats, boardPage, jobDetail, applyDecision,
-  approveJobPacket, rejectJobPacket, markSubmittedByHuman,
-  dashboardSections, setJobNote, buildExportRows, exportRowsToCsv, buildReports,
-  buildDocuments, buildMasterResume,
-  setDuringBulkRun, todayQueue, undoDecision, noteUserMutation, setBrowserAvailability,
-  applicationsWorkspace, recordOutcome, undoOutcome, updateFollowUp,
-} from './data.js';
+import { approveJobPacket, buildMasterResume, setDuringBulkRun, noteUserMutation, setBrowserAvailability, withdrawApproval } from './data.js';
+import { approvalDigest, approvedDigest, digestChanges } from '../apply/approvalDigest.js';
 import { extractDocxText, isDocxBuffer } from '../resume/docxText.js';
-import {
-  runScore, runRescore, runPrepareApps, runQuerySearch, loadPacket, recordAssistResult,
-  preparePacketsForJobs, ingestUrl,
-} from '../cli/commands.js';
+import { runScore, runRescore, runPrepareApps, loadPacket, recordAssistResult, preparePacketsForJobs } from '../cli/commands.js';
 import { assistApply } from '../automation/applyRunner.js';
+import { createCodeFreshness } from './codeFreshness.js';
 import { rescoreStale } from '../pipeline/index.js';
 import { sweepPostings } from '../search/postingLiveness.js';
 import { reconcileStalePackets } from '../apply/packetHygiene.js';
 import { packetOwnershipCheck } from '../apply/applicationPacket.js';
 import { loadConfig } from '../config/loadConfig.js';
-import { writeUserSettings } from '../config/userSettings.js';
+import { findPlaceholders, isPlaceholderValue } from '../config/placeholders.js';
 import { runEnrichment } from '../search/enrich.js';
-import { dataQualitySummary, freshnessSummary } from './dataQuality.js';
-import {
-  PROFILE_FIELDS, readProfile, writeProfile, readScreeningAnswers,
-  writeScreeningAnswers, upsertScreeningAnswer, adoptResumeEvidence,
-} from '../config/profileStore.js';
-import {
-  dismissQuestion, markQuestionAnswered, recordUnansweredQuestions, reopenQuestion,
-  suggestAnswerId, suggestPatterns, summarizeQuestionQueue,
-} from '../apply/questionQueue.js';
+import { PROFILE_FIELDS, readProfile, readScreeningAnswers } from '../config/profileStore.js';
+import { recordUnansweredQuestions, suggestAnswerId, suggestPatterns, summarizeQuestionQueue } from '../apply/questionQueue.js';
 import { evaluateAutoApplyBatch } from '../apply/autoApplyEligibility.js';
-import { markApplicationUserSubmitted, markApplicationVerified } from '../apply/applicationState.js';
+import { loadLiveVerifiedAts } from '../apply/liveVerification.js';
 import { APPROVAL_STATUS } from '../apply/approvalQueue.js';
 import { LIFECYCLE } from '../lifecycle.js';
 import { writeJobTracker } from '../reports/jobTracker.js';
-import {
-  buildExtensionPayload, isChromiumExtensionOrigin, readApprovedArtifact,
-  validExtensionKey,
-} from '../extension/companion.js';
 import { extractResumeEvidence, diffAgainstProfile } from '../resume/resumeProfile.js';
-import {
-  listProfiles as listSearchProfiles, readProfile as readSearchProfile,
-  readActiveProfile, activateProfile, saveProfile as saveSearchProfile, acknowledgeResumeMismatch,
-  deleteProfile as deleteSearchProfile, migrateLegacyCandidate,
-  proposeProfileFromResume, mergeIntoActiveProfile, refreshBackgroundFromResume, resumeProfileToReuse,
-  createPersonProfile, updatePersonProfile,
-} from '../profile/store.js';
-import { profileFromResume, buildBackground } from '../profile/fromResume.js';
+import { readProfile as readSearchProfile } from '../profile/store.js';
 import { workspacePaths, masterResumeFile } from '../profile/workspace.js';
 import { openDatabase } from '../logging/db.js';
 import { seedJobsInto } from '../profile/seed.js';
 import { deriveFromProfile } from '../profile/derive.js';
+import { LOOPBACK_HOSTNAMES, MAX_MASTER_RESUME_BYTES, acceptsGzip, batchJobIds, isAllowedOrigin, sendJson } from './httpHelpers.js';
+import { handleExtensionRoutes } from './routes/extensionRoutes.js';
+import { handleBoardRoutes } from './routes/boardRoutes.js';
+import { handleMasterResumeRoutes } from './routes/masterResumeRoutes.js';
+import { handleMaterialsRoutes } from './routes/materialsRoutes.js';
+import { handleProfileRoutes } from './routes/profileRoutes.js';
+import { handleSystemRoutes } from './routes/systemRoutes.js';
+import { handleBatchRoutes } from './routes/batchRoutes.js';
+import { handleJobRoutes } from './routes/jobRoutes.js';
+import { NOT_HANDLED } from './routes/notHandled.js';
+import { alertDueFollowUps } from '../reports/followUpAlerts.js';
+import { openFollowUps } from '../reports/calendar.js';
+import { createDesktopSink, createNotifier } from '../utils/notifier.js';
+import { handleInboxRoutes } from './routes/inboxRoutes.js';
+import { freezeVersions } from '../apply/documentVersions.js';
+import { backupAll, maybeAutoBackup } from '../logging/backup.js';
+import { instanceProof, lockedPage, resolveApiToken, sessionCookie, tokenFromRequest, tokensMatch, unlockUrl } from './apiToken.js';
+
+/** API route modules, tried in order (see src/dashboard/routes/). */
+const API_ROUTE_MODULES = [
+  handleInboxRoutes,
+  handleBoardRoutes,
+  handleMasterResumeRoutes,
+  handleMaterialsRoutes,
+  handleProfileRoutes,
+  handleSystemRoutes,
+  handleBatchRoutes,
+  handleJobRoutes,
+];
+
+// Moved to httpHelpers.js; re-exported for existing importers.
+export { isAllowedOrigin, runSummary } from './httpHelpers.js';
+
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), 'public');
-
-/** Phases the dashboard may trigger. Submission is intentionally absent. */
-const RUN_PHASES = new Set(['discover', 'score', 'prepare']);
 
 /** Most RCA rows to keep after collapsing — a panel, not a log file. */
 const MAX_RCA_ENTRIES = 25;
 
-/** Bound user-triggered batches so one local request cannot monopolize the UI. */
-const MAX_BATCH_JOBS = 200;
-
-/** Largest board page a request may ask for (the UI offers up to 500). */
-const MAX_JOBS_PAGE = 1000;
-
 /** Keep local resume previews bounded even when a DB path is corrupt. */
 const MAX_RESUME_PREVIEW_BYTES = 12 * 1024 * 1024;
-
-/** A Word resume is tens of KB; anything near this is not a resume. */
-const MAX_MASTER_RESUME_BYTES = 8 * 1024 * 1024;
 
 /**
  * Smallest word count accepted as a master resume. Every tailored resume is
@@ -161,49 +154,6 @@ const MIN_MASTER_RESUME_WORDS = 40;
 
 /** Previous master resumes kept for one-click rollback. */
 const MAX_MASTER_BACKUPS = 10;
-
-/** Upload body cap: base64 inflates the payload by ~4/3, plus JSON overhead. */
-const MAX_UPLOAD_BODY_BYTES = 12 * 1024 * 1024;
-
-/** /api/runs page size: default and ceiling. */
-const RUNS_DEFAULT_LIMIT = 20;
-const RUNS_MAX_LIMIT = 100;
-
-/**
- * One run_log row as /api/runs reports it: the raw columns (kept for existing
- * readers) plus a camelCase summary — counters grouped, the per-source table
- * parsed, and an error COUNT so a list can flag a bad run without parsing.
- *
- * @param {object} row listRunLogs() row
- * @returns {object}
- */
-export function runSummary(row = {}) {
-  const counters = {};
-  for (const [key, value] of Object.entries(row)) {
-    if (key.startsWith('jobs_') && value !== null && value !== undefined) counters[key] = Number(value);
-  }
-  let perSource = [];
-  try { perSource = row.per_source ? JSON.parse(row.per_source) : []; } catch { perSource = []; }
-  let errorCount = 0;
-  if (row.errors) {
-    try {
-      const parsed = JSON.parse(row.errors);
-      errorCount = Array.isArray(parsed) ? parsed.reduce((n, e) => n + (Number(e?.count) || 1), 0) : 1;
-    } catch { errorCount = 1; }
-  }
-  const { per_source: _perSource, ...raw } = row;
-  return {
-    ...raw,
-    runId: row.run_id ?? null,
-    mode: row.mode ?? null,
-    startedAt: row.started_at ?? null,
-    endedAt: row.ended_at ?? null,
-    durationMs: row.durationMs ?? null,
-    counters,
-    perSource: Array.isArray(perSource) ? perSource : [],
-    errorCount,
-  };
-}
 
 /**
  * Fold RCA entries that say the same thing into one row carrying a count.
@@ -299,7 +249,23 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
     dbPath = next;
     // The session logger records against the database it was given.
     if (logger && typeof logger === 'object' && 'db' in logger) logger.db = handle;
+    closeIdleWorkspaceDbs();
     return true;
+  }
+  /**
+   * Close the handles of workspaces nobody is using (RISK-01). Every person
+   * ever switched to kept an open handle (and its WAL files) until shutdown.
+   * Only when nothing runs in the background — a sweep that started on the
+   * previous person's database must finish on it — and never the boot handle,
+   * which belongs to the caller.
+   */
+  function closeIdleWorkspaceDbs() {
+    if (runState.running || inFlight.size) return;
+    for (const [path, handle] of workspaceDbs) {
+      if (handle === bootDb || handle === db) continue;
+      try { handle.close(); } catch { /* best effort */ }
+      workspaceDbs.delete(path);
+    }
   }
   /** The handle for one workspace's database, opening it on first use. */
   function dbForWorkspace(workspaceId) {
@@ -456,6 +422,9 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
     try {
       const loader = deps.loadConfigImpl ?? loadConfig;
       config = loader({ root, loadEnv: false });
+      // This process's own write is now loaded; only a LATER change by another
+      // process should trigger followExternalChanges.
+      if (dbPath) seenActivation = activationStamp(root);
       // A new profile / scoring / gate changes what the board SHOWS without
       // writing a row, so the data-keyed caches must be told.
       noteUserMutation();
@@ -470,6 +439,62 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
         + 'Restart the dashboard before the next auto-apply run.';
     }
   }
+
+  /**
+   * Pick up a template value fixed BY HAND while the dashboard is running.
+   *
+   * Work authorization and the cover-letter fields have no form, so the fix is
+   * an edit to the profile / cover_letter.json (plus `npm run profiles
+   * activate` from a terminal). The server kept the config it loaded at boot,
+   * so after a correct fix the notice still listed the field and Prepare still
+   * refused. Only runs while the loaded config is templated, and reloads only
+   * when the files on disk actually differ, so the normal path costs nothing.
+   *
+   * @returns {string|null} reloadConfig's warning, or null
+   */
+  function refreshConfigIfTemplated() {
+    if (!config?.root) return null;
+    let live;
+    try { live = findPlaceholders(config); } catch { return null; }
+    if (live.ok) return null;
+    let fresh;
+    try { fresh = (deps.loadConfigImpl ?? loadConfig)({ root: config.root, loadEnv: false }); } catch { return null; }
+    const key = (found) => JSON.stringify(found.placeholders.map((p) => [p.file, p.path, p.value]));
+    return key(findPlaceholders(fresh)) === key(live) ? null : reloadConfig();
+  }
+
+  /**
+   * FOLLOW CHANGES MADE BY ANOTHER PROCESS (audit BUG-03).
+   *
+   * `config` and `db` are cached in memory. When something else switches the
+   * active profile or rewrites the profile-derived config (a second dashboard
+   * on another port, `npm run profiles`), this server kept querying the old
+   * person's database against the new person's files. The activation pointer
+   * and the regenerated config files are stat()ed per API request (cheap) and
+   * a change rebinds the workspace and reloads config — never mid-run, where a
+   * run must finish on the database it started with.
+   */
+  const activationFiles = (root) => [
+    join(root, 'config', 'profiles', '_active.json'),
+    join(root, 'config', 'candidate.json'),
+    join(root, 'config', 'scoring.json'),
+    join(root, 'config', 'screening_answers.json'),
+  ];
+  const activationStamp = (root) => activationFiles(root)
+    .map((f) => { try { return statSync(f).mtimeMs; } catch { return 0; } }).join(':');
+  let seenActivation = bootConfig?.root ? activationStamp(bootConfig.root) : '';
+  function followExternalChanges() {
+    const root = config?.root;
+    if (!root || !dbPath) return false;
+    const stamp = activationStamp(root);
+    if (stamp === seenActivation) return false;
+    if (runState.running) return false; // re-checked on the next request after the run
+    seenActivation = stamp;
+    const switched = useActiveWorkspace();
+    reloadConfig();
+    return switched;
+  }
+
 
   /**
    * Re-judge the rows the previous profile scored, off the request path.
@@ -595,6 +620,48 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
    * Today with a posting the exclusion stage would already have retired. Shares
    * scheduleRescore's coalescing and its "yield to a running pipeline" rule.
    */
+  /**
+   * Daily backup of every job-store database (P1-6): checked 2 minutes after
+   * start and every 6 hours, it copies only when the last `auto` backup is
+   * more than a day old. Runs in a worker thread, so the page stays responsive.
+   */
+  const backupState = { running: null, lastError: null, lastResult: null };
+  function runBackup(label) {
+    if (backupState.running) return backupState.running;
+    const impl = deps.backupImpl ?? ((root, opts) => (opts.label === 'auto' ? maybeAutoBackup(root, opts) : backupAll(root, opts)));
+    backupState.running = Promise.resolve()
+      .then(() => impl(config.root, { label, now: nowDate() }))
+      .then((result) => { backupState.lastResult = result; backupState.lastError = null; return result; })
+      .catch((err) => { backupState.lastError = sanitizeErrorMessage(err.message); logger?.warn?.(`backup failed: ${err.message}`); throw err; })
+      .finally(() => { backupState.running = null; });
+    return backupState.running;
+  }
+  function scheduleBackups() {
+    if (process.env.JOB_AGENT_BACKUPS === 'off' || !config?.root) return;
+    const tick = () => { runBackup('auto').catch(() => {}); };
+    const first = setTimeout(tick, deps.backupDelayMs ?? 120_000);
+    const every = setInterval(tick, deps.backupEveryMs ?? 6 * 3600_000);
+    first.unref?.();
+    every.unref?.();
+    server.on('close', () => { clearTimeout(first); clearInterval(every); });
+  }
+
+  /** Desktop alerts for due follow-ups (P3-3), opt-in with FOLLOWUP_NOTIFY=on. */
+  function scheduleFollowUpAlerts() {
+    if (String(process.env.FOLLOWUP_NOTIFY ?? '').toLowerCase() !== 'on' || !config?.root) return;
+    const notifier = deps.notifier ?? createNotifier({ sink: createDesktopSink() });
+    const tick = () => {
+      const today = nowDate().toISOString().slice(0, 10);
+      alertDueFollowUps({ root: config.root, reminders: openFollowUps(db), today, notifier })
+        .catch((err) => logger?.warn?.(`follow-up alerts failed: ${err.message}`));
+    };
+    const first = setTimeout(tick, deps.followUpAlertDelayMs ?? 60_000);
+    const every = setInterval(tick, deps.followUpAlertEveryMs ?? 3600_000);
+    first.unref?.();
+    every.unref?.();
+    server.on('close', () => { clearTimeout(first); clearInterval(every); });
+  }
+
   function scheduleRetentionSweeps() {
     if (process.env.JOB_AGENT_RETENTION_SWEEP === 'off' || !config?.root) return;
     const first = setTimeout(scheduleRescore, deps.retentionSweepDelayMs ?? 2_000);
@@ -721,8 +788,11 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
     const questions = summarizeQuestionQueue(root);
     return {
       available: true,
-      profile,
-      screening,
+      // `placeholder` marks a value that is still the shipped TEMPLATE text, not
+      // something the person wrote. The page shows it as grey placeholder text in
+      // an empty box, so it can never be mistaken for (or sent as) their answer.
+      profile: { ...profile, fields: profile.fields.map((f) => ({ ...f, placeholder: isPlaceholderValue(f.value) })) },
+      screening: { ...screening, answers: screening.answers.map((a) => ({ ...a, placeholder: isPlaceholderValue(a.answer) })) },
       questions: {
         ...questions,
         // Suggested id/patterns are computed here, so the browser never has to
@@ -781,6 +851,60 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
   }
 
   /**
+   * Digest of what approving this job's packet would cover (see
+   * src/apply/approvalDigest.js). Null when the packet cannot be read; an
+   * approval without a digest is simply not compared later.
+   */
+  function approvalDigestFor(jobId) {
+    try {
+      const approval = db.getApprovalByJob?.(jobId);
+      if (!approval) return null;
+      const packet = deps.loadPacketImpl ? deps.loadPacketImpl(approval) : loadPacket(approval);
+      return packet ? approvalDigest(packet, config) : null;
+    } catch { return null; }
+  }
+
+  /**
+   * Has anything the approval covered changed since? When it has, the approval
+   * is withdrawn (the packet goes back to "needs review") and the reason is
+   * returned; null when unchanged or when the approval recorded no digest.
+   */
+  function approvalDriftReason(jobId, packet) {
+    const approved = approvedDigest(db, jobId);
+    if (!approved) return null;
+    const changes = digestChanges(approved, approvalDigest(packet, config));
+    if (!changes.length) return null;
+    withdrawApproval(db, jobId, changes);
+    return `changed since you approved it: ${changes.join(', ')}. Review the packet and approve it again`;
+  }
+
+  /**
+   * A job still marked "being filled" when the dashboard starts was being
+   * filled by a process that is gone (closed, crashed, restarted). Say so,
+   * as a resumable cancelled run, instead of leaving it looking approved.
+   */
+  function recoverInterruptedFills() {
+    let ids = [];
+    try { ids = db.jobIdsWithStatus?.(LIFECYCLE.ASSIST_STARTED) ?? []; } catch { ids = []; }
+    for (const id of ids) {
+      try {
+        db.setJobStatus(id, LIFECYCLE.CANCELLED, {
+          actor: 'assist',
+          reason: 'interrupted: JobAgent stopped while auto-fill was running. Retry auto-fill to continue from the last step',
+          patch: { assist_blockers: JSON.stringify(['interrupted: JobAgent stopped while auto-fill was running. Retry auto-fill to continue from the last step']) },
+        });
+      } catch (err) { logger?.warn?.(`could not recover interrupted fill for ${id}: ${sanitizeErrorMessage(err.message)}`); }
+    }
+    if (ids.length) logger?.info?.(`${ids.length} auto-fill run(s) were interrupted by a restart and are marked cancelled`);
+  }
+
+  /** Mark a job as being filled now; best effort, never blocks a run. */
+  function markAssistStarted(runDb, jobId) {
+    try { runDb.setJobStatus?.(jobId, LIFECYCLE.ASSIST_STARTED, { actor: 'assist', reason: 'auto-fill started' }); }
+    catch (err) { logger?.warn?.(`could not mark ${jobId} as being filled: ${sanitizeErrorMessage(err.message)}`); }
+  }
+
+  /**
    * Re-read a queued job's LIVE state right before filling it. A batch queue is
    * built once up front, but the human keeps using the dashboard while it runs —
    * a job they reject/archive/submit (or whose approval they revoke) mid-run
@@ -811,12 +935,19 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
    *
    * @returns {string|null} the CSV path, or null when skipped
    */
-  function writeTrackerNow() {
-    const root = config?.root;
+  // The database and root the pending tracker write belongs to, captured when
+  // it was scheduled (RISK-03): a profile switch inside the 400 ms debounce
+  // otherwise wrote the NEW person's jobs into the tracker the old change was for,
+  // and left the old person's tracker stale.
+  let trackerTarget = null;
+  function writeTrackerNow(target = trackerTarget ?? { db, root: config?.root }) {
+    const root = target?.root;
     if (!root) return null;
     try {
       const writeImpl = deps.writeJobTrackerImpl ?? writeJobTracker;
-      return writeImpl(db, root).path;
+      const path = writeImpl(target.db ?? db, root).path;
+      if (target === trackerTarget) trackerTarget = null;
+      return path;
     } catch (err) {
       logger?.warn?.(`tracker refresh failed: ${err.message}`);
       return null;
@@ -841,6 +972,14 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
   const TRACKER_DEBOUNCE_MS = deps.trackerDebounceMs ?? 400;
   function refreshTracker() {
     if (!config?.root) return;
+    // A switch since the last schedule: flush the previous person's write
+    // now, against THEIR database, before scheduling this one.
+    if (trackerTarget && trackerTarget.db !== db && trackerDirty) {
+      if (trackerTimer) { clearTimeout(trackerTimer); trackerTimer = null; }
+      trackerDirty = false;
+      writeTrackerNow(trackerTarget);
+    }
+    trackerTarget = { db, root: config.root };
     trackerDirty = true;
     if (trackerTimer) return;
     trackerTimer = setTimeout(() => {
@@ -1270,7 +1409,8 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
       }
       return { job, approval, packet };
     });
-    const preview = evaluateAutoApplyBatch({ items, autoSubmitAuthorized });
+    const liveVerifiedAts = deps.liveVerifiedAts ?? loadLiveVerifiedAts(config?.root);
+    const preview = evaluateAutoApplyBatch({ items, autoSubmitAuthorized, liveVerifiedAts });
     for (const item of preview.items) {
       const packetError = packetErrors.get(item.jobId);
       if (!packetError) continue;
@@ -1471,6 +1611,12 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
       err.statusCode = 409;
       throw err;
     }
+    const decided = db.getJob?.(jobId)?.user_decision;
+    if (decided === 'rejected' || decided === 'archived') {
+      const err = new Error(`you ${decided} this job, so it is not filled. Restore it first if you want to apply`);
+      err.statusCode = 409;
+      throw err;
+    }
     const approval = db.getApprovalByJob?.(jobId);
     if (!approval || approval.approval_status !== APPROVAL_STATUS.APPROVED) {
       const err = new Error('packet is not human-approved, approve it first');
@@ -1495,8 +1641,19 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
       err.statusCode = 409;
       throw err;
     }
+    const drift = approvalDriftReason(jobId, loaded);
+    if (drift) {
+      const err = new Error(`Not filled: ${drift}.`);
+      err.statusCode = 409;
+      throw err;
+    }
     const packet = reconcilePacket(loaded, jobId);
     const runId = randomUUID();
+    // The store this run belongs to. A profile switch rebinds `db`; the
+    // hand-off watcher can report up to 45 minutes later and must write to
+    // the person whose application it watched.
+    const runDb = db;
+    markAssistStarted(runDb, jobId);
     Object.assign(runState, {
       running: true, phase: `assist:${jobId}`, startedAt: new Date().toISOString(),
       finishedAt: null, lastError: null, cancelRequested: false,
@@ -1514,12 +1671,12 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
             // Same hand-off watch the batch path wires: a human who submits in
             // the window we leave open is recorded (as submit_unverified until
             // they confirm), instead of the job silently staying "ready".
-            onHumanSubmitted: (update) => { recordAssistResult(db, jobId, update); refreshTracker(); },
+            onHumanSubmitted: (update) => { recordAssistResult(runDb, jobId, update); refreshTracker(); },
             ...deps,
             shouldCancel: () => runState.cancelRequested,
           },
         });
-        recordAssistResult(db, jobId, result);
+        recordAssistResult(runDb, jobId, result);
         refreshTracker();
         runState.lastResult = {
           phase: 'assist', jobId, status: result.status,
@@ -1699,6 +1856,7 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
             deps: { ...deps, shouldCancel: () => runState.cancelRequested },
           });
           for (const f of prep.failed ?? []) skipped.push({ jobId: f.jobId, reason: f.error });
+          for (const c of prep.cancelled ?? []) skipped.push({ jobId: c.jobId, reason: c.reason });
         }
 
         // 2+3. Approve (the click is the approval) and fill, one at a time.
@@ -1707,8 +1865,14 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
           if (skipped.some((s) => s.jobId === jobId)) continue;
           let approval = db.getApprovalByJob?.(jobId);
           if (!approval) { skipped.push({ jobId, reason: 'no packet could be prepared' }); continue; }
+          // A packet the person REJECTED is a decision, not a pending review:
+          // pressing Auto-fill on a batch is not a reason to overturn it.
+          if (approval.approval_status === APPROVAL_STATUS.REJECTED) {
+            skipped.push({ jobId, reason: 'you rejected this packet; approve it (or prepare it again) before auto-fill' });
+            continue;
+          }
           if (approval.approval_status !== APPROVAL_STATUS.APPROVED) {
-            approveJobPacket(db, jobId);
+            approveJobPacket(db, jobId, { digest: approvalDigestFor(jobId) });
             approval = db.getApprovalByJob(jobId);
           }
           const loaded = deps.loadPacketImpl ? deps.loadPacketImpl(approval) : loadPacket(approval);
@@ -1736,7 +1900,7 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
           }
           // Re-checked at the moment of filling: an approval or packet that
           // changed while earlier jobs were running was not what was reviewed.
-          const liveSkip = liveSkipReason(jobId) ?? (autoSubmit
+          const liveSkip = liveSkipReason(jobId) ?? approvalDriftReason(jobId, packet) ?? (autoSubmit
             ? (() => {
               const problem = autoSubmitReviewProblem({
                 job: db.getJob?.(jobId), approval: db.getApprovalByJob?.(jobId),
@@ -1755,6 +1919,8 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
           }
           runState.phase = `auto-apply (${done + 1}/${queue.length}), ${jobId}`;
           runState.progress.currentJobId = jobId;
+          const runDb = db;
+          markAssistStarted(runDb, jobId);
           const progressItem = runState.progress.items.find((x) => x.jobId === jobId);
           if (progressItem) progressItem.status = 'opening';
           try {
@@ -1764,14 +1930,19 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
               deps: {
                 // A confirmation page the human reaches in the handed-over
                 // window is recorded as submit_unverified with its evidence.
-                onHumanSubmitted: (update) => { recordAssistResult(db, jobId, update); refreshTracker(); },
+                onHumanSubmitted: (update) => { recordAssistResult(runDb, jobId, update); refreshTracker(); },
                 ...deps,
                 shouldCancel: () => runState.cancelRequested,
               },
             });
-            recordAssistResult(db, jobId, result);
+            recordAssistResult(runDb, jobId, result);
             captureUnansweredQuestions(jobId, result);
-            if (result.submitted === true) dailyCount += 1;
+            if (result.submitted === true) {
+              dailyCount += 1;
+              // The documents just sent are now the record: freeze them (P2-2).
+              try { freezeVersions(db.getJob?.(jobId)?.output_folder_path, { reason: 'submitted automatically' }); }
+              catch (err) { logger?.warn?.(`could not freeze document versions for ${jobId}: ${err.message}`); }
+            }
             const itemResult = {
               jobId, status: result.status, submitted: result.submitted === true,
               blockers: result.blockers ?? [], resumed: result.resumed === true,
@@ -1839,6 +2010,64 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
     }
   });
 
+  // null when disabled (tests); otherwise the workspace's token (P1-5).
+  const apiToken = resolveApiToken({ deps, root: bootConfig?.root });
+
+  /**
+   * The closure the route modules (src/dashboard/routes/*) need, as getters so
+   * every read sees the live value: db and config are reassigned when the
+   * active profile changes or config reloads.
+   */
+  // Is this server older than the code on disk? (see codeFreshness.js)
+  const codeChangedSinceStart = deps.codeFreshness ?? createCodeFreshness();
+  const ctx = {
+    get backupState() { return backupState; },
+    get codeChangedSinceStart() { return codeChangedSinceStart; },
+    get runBackup() { return runBackup; },
+    get autoApplyEligibility() { return autoApplyEligibility; },
+    get approvalDigestFor() { return approvalDigestFor; },
+    get browserAvailableCached() { return browserAvailableCached; },
+    get config() { return config; },
+    get db() { return db; },
+    get deps() { return deps; },
+    get enrichment() { return enrichment; },
+    get enrichmentStatus() { return enrichmentStatus; },
+    get extensionKey() { return extensionKey; },
+    get flushTracker() { return flushTracker; },
+    get healthReport() { return healthReport; },
+    get isSubmittedOrUnverified() { return isSubmittedOrUnverified; },
+    get logger() { return logger; },
+    get masterResumeState() { return masterResumeState; },
+    get materializeResumePreview() { return materializeResumePreview; },
+    get nowDate() { return nowDate; },
+    get postingSweep() { return postingSweep; },
+    get profileState() { return profileState; },
+    get readMasterResumeFile() { return readMasterResumeFile; },
+    get readResumePreview() { return readResumePreview; },
+    get refreshTracker() { return refreshTracker; },
+    get reloadConfig() { return reloadConfig; },
+    get refreshConfigIfTemplated() { return refreshConfigIfTemplated; },
+    get replaceMasterResume() { return replaceMasterResume; },
+    get requireConfigRoot() { return requireConfigRoot; },
+    get restoreMasterResume() { return restoreMasterResume; },
+    get resumeSuggestions() { return resumeSuggestions; },
+    get runAbort() { return runAbort; },
+    get runPostingSweep() { return runPostingSweep; },
+    get runState() { return runState; },
+    get saving() { return saving; },
+    get scheduleRescore() { return scheduleRescore; },
+    get seedNewPerson() { return seedNewPerson; },
+    get startAssist() { return startAssist; },
+    get startAssistBatch() { return startAssistBatch; },
+    get startEnrichmentPass() { return startEnrichmentPass; },
+    get startRun() { return startRun; },
+    get summarizeSearchProfile() { return summarizeSearchProfile; },
+    get takeRunLock() { return takeRunLock; },
+    get track() { return track; },
+    get useActiveWorkspace() { return useActiveWorkspace; },
+    get followExternalChanges() { return followExternalChanges; },
+  };
+
   async function route(req, res) {
     setSecurityHeaders(res);
     // ── Cross-site request defense ─────────────────────────────────────────
@@ -1852,112 +2081,9 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
     }
     const url = new URL(req.url, 'http://localhost');
     const path = url.pathname;
-
-    // The optional Chromium extension has a different origin by design. It is
-    // admitted only on this narrow API namespace, only from a real extension
-    // origin, and only with a 32+ byte shared key. All ordinary dashboard
-    // routes retain the stricter same-loopback-origin policy below.
-    if (path.startsWith('/api/extension/')) {
-      const origin = String(req.headers.origin ?? '');
-      const fetchSite = String(req.headers['sec-fetch-site'] ?? '').toLowerCase();
-      // Edge does not consistently attach the extension origin to privileged
-      // loopback fetches (depending on popup/service-worker context). Treat the
-      // high-entropy shared key as authentication, while Fetch Metadata + CORS
-      // continue to reject normal cross-site webpages. A null/absent Origin is
-      // accepted only on this key-protected namespace.
-      const allowedTransport = isChromiumExtensionOrigin(origin)
-        || isAllowedOrigin(origin)
-        || origin === 'null';
-      if (!allowedTransport || fetchSite === 'cross-site') {
-        return sendJson(res, 403, { error: 'forbidden: extension transport rejected' });
-      }
-      if (origin) setExtensionCors(res, origin);
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204);
-        res.end();
-        return;
-      }
-      if (!validExtensionKey(extensionKey, req.headers['x-job-agent-key'])) {
-        return sendJson(res, extensionKey ? 401 : 503, {
-          error: extensionKey
-            ? 'invalid Job Agent extension key'
-            : 'extension API is disabled; set JOB_AGENT_EXTENSION_KEY in .env and restart',
-        });
-      }
-
-      const match = path.match(/^\/api\/extension\/jobs\/([^/]+)(?:\/(payload|result|files\/(resume|cover-letter)))?$/);
-      if (!match) return sendJson(res, 404, { error: `no extension route: ${req.method} ${path}` });
-      const jobId = decodeURIComponent(match[1]);
-      const action = match[2] ?? 'payload';
-      if (req.method === 'GET' && action === 'payload') {
-        return sendJson(res, 200, buildExtensionPayload({
-          db, config, jobId, loadPacketImpl: deps.loadPacketImpl,
-        }));
-      }
-      if (req.method === 'GET' && action.startsWith('files/')) {
-        const artifact = readApprovedArtifact({
-          db, config, jobId, kind: match[3], loadPacketImpl: deps.loadPacketImpl,
-        });
-        res.writeHead(200, {
-          'content-type': artifact.type,
-          'content-length': artifact.bytes.length,
-          'content-disposition': `attachment; filename="${artifact.name.replace(/["\r\n]/g, '_')}"`,
-        });
-        res.end(artifact.bytes);
-        return;
-      }
-      if (req.method === 'POST' && action === 'result') {
-        const body = await readBody(req);
-        // The extension may only REPORT on a job it was given an approved
-        // packet for. This route used to accept any id: an unknown one created
-        // nothing but still "recorded", and a submitted (or unverified-submit)
-        // job could be flipped back to assist_started / ready_for_submit —
-        // un-submitting an application and re-opening it for a second fill.
-        const current = db.getJob?.(jobId);
-        if (!current) return sendJson(res, 404, { error: `unknown job id: ${jobId}` });
-        if (isSubmittedOrUnverified(current)) {
-          return sendJson(res, 409, { error: 'this job is already submitted (or awaiting submit verification) — result not recorded' });
-        }
-        const approvalRow = db.getApprovalByJob?.(jobId);
-        if (!approvalRow || approvalRow.approval_status !== APPROVAL_STATUS.APPROVED) {
-          return sendJson(res, 409, { error: 'this job\'s packet is not human-approved — approve it before using the extension' });
-        }
-        const filled = Array.isArray(body.filled) ? body.filled.slice(0, 120).map((x) => ({
-          field: String(x?.field ?? '').slice(0, 80),
-          label: String(x?.label ?? '').slice(0, 120),
-          source: String(x?.source ?? '').slice(0, 40),
-        })) : [];
-        const blockers = Array.isArray(body.blockers)
-          ? body.blockers.slice(0, 40).map((x) => String(x).slice(0, 240)) : [];
-        const formDetected = body.formDetected === true;
-        const startedApplication = body.startedApplication === true;
-        const readyForReview = body.readyForReview === true
-          && formDetected && filled.length > 0 && blockers.length === 0;
-        const status = readyForReview ? LIFECYCLE.READY_FOR_SUBMIT
-          : formDetected && blockers.length > 0 ? LIFECYCLE.ASSIST_BLOCKED
-            : LIFECYCLE.ASSIST_STARTED;
-        const phases = [
-          { phase: 'extension_assist_started', at: nowDate().toISOString() },
-          { phase: status, at: nowDate().toISOString() },
-        ];
-
-        // Once a user follows an aggregator's Apply link, remember the verified
-        // employer URL. Future extension runs open the useful direct page
-        // instead of bouncing through LinkedIn/Indeed again.
-        if (body.contextVerified === true && isSafeObservedApplicationUrl(body.observedUrl)) {
-          if (isAggregatorUrl(current.url)) {
-            db.upsertJob({ id: jobId, url: String(body.observedUrl).slice(0, 2048) });
-          }
-        }
-        recordAssistResult(db, jobId, {
-          status, submitted: false, filled, blockers, phases,
-        });
-        refreshTracker();
-        return sendJson(res, 200, {
-          recorded: true, status, formDetected, startedApplication, readyForReview,
-        });
-      }
-      return sendJson(res, 405, { error: 'method not allowed' });
+    {
+      const handled = await handleExtensionRoutes(ctx, req, res, { url, path });
+      if (handled !== NOT_HANDLED) return handled;
     }
     // Origin is not reliably sent for cross-site GETs (for example an image or
     // form navigation). Modern browsers do send Fetch Metadata, so reject an
@@ -1983,6 +2109,59 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
       });
     }
 
+    if (path.startsWith('/api/') && path !== '/api/instance') followExternalChanges();
+
+    // ── Instance proof ─────────────────────────────────────────────────────
+    // Lets the launcher confirm it is talking to THIS install before it sends
+    // the access token (see instanceProof). Answers only a challenge; reveals
+    // nothing that could be replayed.
+    if (readOnly && path === '/api/instance') {
+      const challenge = String(url.searchParams.get('challenge') ?? '');
+      if (!/^[a-f0-9]{32,128}$/i.test(challenge)) return sendJson(res, 400, { error: 'challenge must be 32-128 hex characters' });
+      return sendJson(res, 200, { app: 'job-agent', proof: apiToken ? instanceProof(apiToken, challenge) : null });
+    }
+
+    // ── Explore JobAgent ───────────────────────────────────────────────────
+    // The product overview and technical deep dive is a static page under
+    // /assets/explore/, served by serveStatic like any other asset. This is
+    // only the short address for it. It sits above the token check for the
+    // same reason static assets are exempt from it: the page is the app's own
+    // public code and shows no personal data.
+    if (readOnly && (path === '/explore' || path === '/explore/')) {
+      res.writeHead(302, { location: '/assets/explore/index.html' });
+      res.end();
+      return;
+    }
+
+    // ── Access token (P1-5) ────────────────────────────────────────────────
+    // Everything above stops web pages; this stops other programs and other
+    // user accounts on the same computer. The launcher opens /?token=…, which
+    // is swapped for an HttpOnly cookie; scripts may send X-Job-Agent-Token.
+    // Static assets are the app's own public code and carry no data.
+    if (apiToken && !(readOnly && path.startsWith('/assets/'))) {
+      const port = server.address()?.port;
+      if (readOnly && path === '/' && url.searchParams.has('token')) {
+        if (!tokensMatch(url.searchParams.get('token'), apiToken)) {
+          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' });
+          res.end(req.method === 'HEAD' ? undefined : lockedPage());
+          return;
+        }
+        res.writeHead(303, { location: '/', 'set-cookie': sessionCookie(apiToken, port) });
+        res.end();
+        return;
+      }
+      if (!tokensMatch(tokenFromRequest(req, port), apiToken)) {
+        if (readOnly && (path === '/' || path === '/index.html')) {
+          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' });
+          res.end(req.method === 'HEAD' ? undefined : lockedPage());
+          return;
+        }
+        return sendJson(res, 401, {
+          error: 'locked: open JobAgent from its launcher, or run "npm run dashboard:link" and open the link it prints',
+        });
+      }
+    }
+
     if (readOnly && (path === '/' || path === '/index.html')) {
       const html = readFileSync(join(PUBLIC_DIR, 'index.html'), 'utf8');
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -1993,912 +2172,11 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
     if (readOnly && path.startsWith('/assets/')) {
       return serveStatic(req, res, path);
     }
-    if (req.method === 'GET' && path === '/api/stats') {
-      // Stale-while-revalidate: a stats rebuild blocks this single-threaded
-      // server for seconds on a large store; the tiles can show the last value
-      // (flagged `stale: true`) while one rebuild runs after the response.
-      return sendJson(res, 200, dashboardStats(db, { now: nowDate(), config, allowStale: true }));
-    }
-    // The Today queue: the ten next actions + setup notices (see todayQueue).
-    if (req.method === 'GET' && path === '/api/today') {
-      return sendJson(res, 200, todayQueue(db, { now: nowDate(), config, browserAvailable: await browserAvailableCached() }));
-    }
-    // The Applications workspace: every application as a card in its stage,
-    // with recorded outcomes, follow-ups and the numbers they add up to.
-    if (req.method === 'GET' && path === '/api/applications') {
-      return sendJson(res, 200, applicationsWorkspace(db, { now: nowDate(), config }));
-    }
-    if (req.method === 'GET' && path === '/api/jobs') {
-      const filters = Object.fromEntries(url.searchParams.entries());
-      filters.now = nowDate();
-      // One page, not the table: `?limit=1e9` would serialize every row of a
-      // 100k-job database. The UI's largest page size is 500.
-      if (Number(filters.limit) > MAX_JOBS_PAGE) filters.limit = String(MAX_JOBS_PAGE);
-      return sendJson(res, 200, boardPage(db, filters));
-    }
-    // Ad-hoc query-first discovery: "find jobs matching this phrase, now".
-    // Shares the run lock with /api/run, because it drives the same pipeline
-    // and two concurrent writers would interleave upserts on the same rows.
-    if (req.method === 'POST' && path === '/api/search') {
-      const body = await readBody(req);
-      const query = String(body.query ?? '').trim();
-      if (!query) return sendJson(res, 400, { error: 'enter something to search for' });
-      if (runState.running) {
-        return sendJson(res, 409, { error: `a ${runState.phase} run is in progress — wait for it to finish` });
-      }
-      /*
-       * TAKE THE LOCK, do not merely look at it.
-       *
-       * This checked `runState.running` and never SET it, so the mutual
-       * exclusion it documents only worked in one direction: a run blocked a
-       * search, and a search blocked nothing. Starting "Find new jobs" while a
-       * role search was in flight ran both pipelines against the same jobs
-       * table at once — the interleaved upserts this guard exists to prevent,
-       * and with the two modes now writing different `discovery_mode` values to
-       * the same rows, the ownership rule in persistJob would be racing too.
-       *
-       * Held in a finally so a failed search can never strand the lock and
-       * leave every later run answering 409.
-       */
-      const searchLock = takeRunLock('role_search');
-      Object.assign(runState, {
-        running: true, phase: `role search: ${query}`, startedAt: new Date().toISOString(),
-        finishedAt: null, lastError: null, cancelRequested: false,
-        runId: randomUUID(), rca: [], partial: false, progress: null,
-      });
-      try {
-        const searchFn = deps.querySearchFn ?? runQuerySearch;
-        const result = await searchFn({ config, db, logger, query, deps });
-        return sendJson(res, 200, result);
-      } catch (err) {
-        runState.lastError = sanitizeErrorMessage(err.message);
-        return sendJson(res, err.statusCode ?? 400, { error: sanitizeErrorMessage(err.message) });
-      } finally {
-        runState.running = false;
-        runState.finishedAt = new Date().toISOString();
-        searchLock.release();
-      }
-    }
-    /*
-     * The role searches that have been run and still hold rows.
-     *
-     * Role-search results live in the same table as the personalized board but
-     * are fenced off by `discovery_mode`, so they need their own index — there
-     * is no other way to find them again, and without one they would be rows
-     * nobody could reach or clean up.
-     */
-    if (req.method === 'GET' && path === '/api/search/history') {
-      return sendJson(res, 200, { searches: db.listRoleSearches?.() ?? [] });
-    }
-    // Discard one role search entirely. Scoped to `discovery_mode` in SQL, so
-    // it can never reach a row the personalized board owns.
-    if (req.method === 'DELETE' && path === '/api/search') {
-      const query = String(url.searchParams.get('query') ?? '').trim();
-      if (!query) return sendJson(res, 400, { error: 'which search should be cleared?' });
-      const removed = db.deleteRoleSearch?.(query) ?? 0;
-      // `kept`: rows the user had acted on (applied, decided, packet, queued)
-      // are re-owned by the personalized board instead of deleted.
-      return sendJson(res, 200, { query, removed, kept: db.lastRoleSearchKept ?? 0 });
-    }
-    if (req.method === 'GET' && path === '/api/run/status') {
-      return sendJson(res, 200, runState);
-    }
-    // Run HISTORY, as opposed to the live state above. run_log was written by
-    // nothing and read by nothing, so "what did last night's run do?" had no
-    // answer anywhere in the product.
-    if (req.method === 'GET' && path === '/api/runs') {
-      const requested = Number(url.searchParams.get('limit') ?? RUNS_DEFAULT_LIMIT);
-      const limit = Number.isFinite(requested) && requested >= 1
-        ? Math.min(RUNS_MAX_LIMIT, Math.floor(requested)) : RUNS_DEFAULT_LIMIT;
-      return sendJson(res, 200, { runs: (db.listRunLogs?.({ limit }) ?? []).map(runSummary) });
-    }
-    if (req.method === 'POST' && path === '/api/run/cancel') {
-      if (!runState.running) {
-        return sendJson(res, 409, { error: 'nothing is running' });
-      }
-      runState.cancelRequested = true;
-      // Abort in-flight and gate-queued network work too. Without this, cancel
-      // was cooperative polling only: adapters noticed between operations, but a
-      // request already on the wire still had to finish or time out (30s), so
-      // stopping a discovery run took ~30 seconds.
-      runAbort?.abort();
-      return sendJson(res, 202, {
-        cancelling: true,
-        phase: runState.phase,
-        note: runState.phase === 'discover'
-          ? 'queued discovery work is dropped and in-flight requests are aborted; results already found are kept'
-          : 'the current safe step will finish, then queued work will stop',
-      });
-    }
-    if (req.method === 'GET' && path === '/api/sections') {
-      const sections = dashboardSections(db, { now: nowDate() });
-      // `?only=<key>`: one section, for a panel that refreshes on its own.
-      const only = url.searchParams.get('only');
-      if (only) {
-        if (!Object.hasOwn(sections, only)) {
-          return sendJson(res, 400, { error: `unknown section "${only}" (use ${Object.keys(sections).join(', ')})` });
-        }
-        return sendJson(res, 200, { [only]: sections[only] });
-      }
-      return sendJson(res, 200, sections);
-    }
-    if (req.method === 'GET' && path === '/api/reports') {
-      return sendJson(res, 200, buildReports(db, { now: nowDate(), config }));
-    }
-    if (req.method === 'GET' && path === '/api/documents') {
-      return sendJson(res, 200, buildDocuments(db, { root: config?.root ?? null, now: nowDate() }));
-    }
-    if (req.method === 'GET' && path === '/api/master-resume') {
-      return sendJson(res, 200, masterResumeState());
-    }
-    if (req.method === 'GET' && path === '/api/master-resume/file') {
-      const artifact = readMasterResumeFile();
-      // A DOCX can never render in the browser, so it is always a download and
-      // is locked down accordingly.
-      res.setHeader('content-security-policy', "default-src 'none'; frame-ancestors 'none'");
-      res.writeHead(200, {
-        'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'content-length': artifact.bytes.length,
-        'content-disposition': `attachment; filename="${artifact.name.replace(/["\r\n]/g, '_')}"`,
-      });
-      res.end(artifact.bytes);
-      return;
-    }
-    if (req.method === 'POST' && path === '/api/master-resume') {
-      const body = await readBody(req, MAX_UPLOAD_BODY_BYTES);
-      const encoded = String(body.contentBase64 ?? '');
-      if (!encoded) {
-        return sendJson(res, 400, { error: 'no file contents were received' });
-      }
-      // Reject anything that is not strict base64 before decoding: Buffer.from
-      // silently DISCARDS invalid characters, which would turn a mangled
-      // upload into a plausible-looking but corrupt resume.
-      if (!/^[A-Za-z0-9+/\r\n]*={0,2}$/.test(encoded)) {
-        return sendJson(res, 400, { error: 'the file contents were not transferred correctly, try again' });
-      }
-      const bytes = Buffer.from(encoded, 'base64');
-      const result = replaceMasterResume({ filename: body.filename, bytes });
-      // The whole point of the upload: say immediately whether this resume and
-      // the saved search profile are describing the same job. Replacing the
-      // file changes nothing about discovery on its own.
-      return sendJson(res, 200, { ...result, suggestions: resumeSuggestions() });
-    }
-    // Role/skill evidence read out of the CURRENT master resume, next to what
-    // discovery is actually searching for. Read-only: it proposes, and adopting
-    // anything is a separate, explicit POST — see src/resume/resumeProfile.js
-    // for why deriving targetTitles automatically would be wrong.
-    if (req.method === 'GET' && path === '/api/master-resume/suggestions') {
-      return sendJson(res, 200, resumeSuggestions());
-    }
-    if (req.method === 'POST' && path === '/api/master-resume/restore') {
-      const body = await readBody(req);
-      return sendJson(res, 200, restoreMasterResume(body.name));
-    }
-    /* ── Search profiles ───────────────────────────────────────────────────
-     *
-     * WHOSE SEARCH IS RUNNING? These endpoints exist so the board can answer
-     * that, and so a different candidate's resume can produce a different
-     * search without anyone editing JSON by hand. `/api/profile` above is a
-     * different thing: the contact details the FORM FILLER types. This is what
-     * the agent LOOKS FOR.
-     */
-    // Re-read the active profile's background (roles, employers, education,
-    // skills) from the master resume — the fix for a profile still carrying
-    // the template's "Example Corp". Search goals are never touched.
-    if (req.method === 'POST' && path === '/api/search-profiles/refresh-background') {
-      if (runState.running) {
-        return sendJson(res, 409, { error: `a ${runState.phase} run is in progress — try again when it finishes` });
-      }
-      const root = requireConfigRoot();
-      const result = await refreshBackgroundFromResume(root, masterResumeFile(root), { db });
-      if (!result.ok) return sendJson(res, 409, { error: result.reason });
-      let warning = null;
-      if (result.changed.length) {
-        warning = reloadConfig();
-        if (!warning) scheduleRescore();
-      }
-      return sendJson(res, 200, { id: result.id, changed: result.changed, warning });
-    }
-    if (req.method === 'GET' && path === '/api/search-profiles') {
-      const root = requireConfigRoot();
-      const listing = listSearchProfiles(root);
-      const active = readActiveProfile(root);
-      return sendJson(res, 200, {
-        ...listing,
-        active: active ? summarizeSearchProfile(active) : null,
-      });
-    }
-    // Read the master resume as a PROPOSAL: what it says, whether it looks like
-    // the same person, and the three things the user may do about it. Read-only
-    // — see src/profile/fromResume.js for why adopting stays an explicit act.
-    if (req.method === 'GET' && path === '/api/search-profiles/from-resume/preview') {
-      const root = requireConfigRoot();
-      const result = await proposeProfileFromResume(root, masterResumeFile(root));
-      return sendJson(res, 200, result);
-    }
-    // Catch-all by id. MUST stay after every literal sub-path above: it treats
-    // whatever follows the prefix as a profile id, so a route added below it
-    // silently becomes a 404 for a profile that does not exist.
-    if (req.method === 'GET' && path.startsWith('/api/search-profiles/')) {
-      const root = requireConfigRoot();
-      const id = decodeURIComponent(path.slice('/api/search-profiles/'.length));
-      const profile = readSearchProfile(root, id);
-      if (!profile) return sendJson(res, 404, { error: `no profile named "${id}"` });
-      return sendJson(res, 200, summarizeSearchProfile(profile));
-    }
-    if (req.method === 'POST' && path === '/api/search-profiles/activate') {
-      const body = await readBody(req);
-      /**
-       * A RUN IN PROGRESS OWNS THE CONFIGURATION IT STARTED WITH.
-       *
-       * Activation rewrites candidate.json, scoring.json, exclusions.json and
-       * the screening answers, then reloads the in-memory config. An auto-apply
-       * batch holds a queue of packets built BEFORE that, but reads `config`
-       * fresh on every iteration — so activating mid-batch filled the remaining
-       * jobs with one profile's screening answers onto another profile's
-       * documents, in the same run. The batch is short and the switch can wait.
-       */
-      // A dry run computes and writes nothing, so it stays available.
-      if (runState.running && body.dryRun !== true) {
-        return sendJson(res, 409, {
-          error: `a ${runState.phase} run is in progress — wait for it to finish before switching search profiles, `
-            + 'so one batch cannot mix two profiles\' answers and documents',
-        });
-      }
-      return saving(res, () => {
-        const root = requireConfigRoot();
-        const summary = activateProfile(root, String(body.id ?? ''), { dryRun: body.dryRun === true });
-        // Activation rewrites candidate.json, scoring.json and exclusions.json.
-        // The in-memory config MUST be reloaded or the board keeps serving the
-        // previous candidate's search until the process restarts.
-        const warning = summary.dryRun ? null : reloadConfig();
-        // A different person: every route now reads THEIR database.
-        const workspaceChanged = summary.dryRun ? false : useActiveWorkspace();
-        if (!summary.dryRun && !warning) scheduleRescore();
-        return sendJson(res, 200, { ...summary, warning, workspaceChanged });
-      });
-    }
-    // Re-open a resume question the user had settled with "Keep my current
-    // goals". Clearing the acknowledgment is the only way back to the prompt,
-    // so the decision is durable without being irreversible.
-    if (req.method === 'POST' && path === '/api/search-profiles/acknowledge-resume') {
-      const body = await readBody(req);
-      return saving(res, () => {
-        const root = requireConfigRoot();
-        if (body.clear === true) {
-          return sendJson(res, 200, acknowledgeResumeMismatch(root, ''));
-        }
-        const proposed = readActiveProfile(root);
-        if (!proposed) return sendJson(res, 200, { acknowledged: false });
-        return sendJson(res, 200, acknowledgeResumeMismatch(root, String(body.fingerprint ?? '')));
-      });
-    }
-    if (req.method === 'POST' && path === '/api/search-profiles/migrate') {
-      return saving(res, () => {
-        const result = migrateLegacyCandidate(requireConfigRoot());
-        return sendJson(res, 200, result);
-      });
-    }
-    if (req.method === 'DELETE' && path.startsWith('/api/search-profiles/')) {
-      const id = decodeURIComponent(path.slice('/api/search-profiles/'.length));
-      return saving(res, () => sendJson(res, 200, deleteSearchProfile(requireConfigRoot(), id)));
-    }
-    /* ── adding and editing a person ──────────────────────────────────────
-     * "Add profile" never replaces anyone's resume: a resume given here is read
-     * for the form and saved into the NEW person's own workspace only. */
-    if (req.method === 'POST' && path === '/api/search-profiles/read-resume') {
-      const body = await readBody(req, MAX_UPLOAD_BODY_BYTES);
-      return saving(res, () => {
-        const bytes = decodeResumeUpload(body);
-        const { paragraphs } = extractDocxText(bytes);
-        const draft = profileFromResume(paragraphs, {});
-        return sendJson(res, 200, {
-          fields: {
-            fullName: draft.identity.fullName,
-            email: draft.contact.email,
-            phone: draft.contact.phone,
-            targetRoles: draft.searchIntent.targetRoles,
-            seniority: draft.searchIntent.seniority || '',
-          },
-          found: {
-            roles: draft.searchIntent.targetRoles.length,
-            jobs: draft.background.workHistory.length,
-            skills: draft.background.skills.length,
-          },
-        });
-      });
-    }
-    if (req.method === 'POST' && path === '/api/search-profiles') {
-      const body = await readBody(req, MAX_UPLOAD_BODY_BYTES);
-      if (runState.running && body.activate === true) {
-        return sendJson(res, 409, { error: `a ${runState.phase} run is in progress — add the profile after it finishes` });
-      }
-      return saving(res, () => {
-        const root = requireConfigRoot();
-        let resume = null;
-        if (body.resume?.contentBase64) {
-          const bytes = decodeResumeUpload(body.resume);
-          resume = { bytes, background: buildBackground(extractDocxText(bytes).paragraphs, { sourceFile: '' }) };
-          delete resume.background._name; delete resume.background._headline; delete resume.background._contact;
-        }
-        const created = createPersonProfile(root, body.fields ?? {}, { resume });
-        // The list being viewed right now: seeding copies from it.
-        const viewedDb = db;
-        let activated = null; let warning = null; let workspaceChanged = false;
-        if (body.activate === true) {
-          try { activated = activateProfile(root, created.id); }
-          catch (err) { deleteSearchProfile(root, created.id); throw err; }
-          warning = reloadConfig();
-          workspaceChanged = useActiveWorkspace();
-        }
-        const seed = body.seed === true ? seedNewPerson(root, created.id, viewedDb) : { seeded: 0 };
-        if (activated && !warning) scheduleRescore(); // scores the seeded copies under THEIR profile
-        return sendJson(res, 200, { ...created, activated, warning, workspaceChanged, seeded: seed.seeded });
-      });
-    }
-    if (req.method === 'PATCH' && path.startsWith('/api/search-profiles/')) {
-      const id = decodeURIComponent(path.slice('/api/search-profiles/'.length));
-      const body = await readBody(req);
-      return saving(res, () => {
-        const root = requireConfigRoot();
-        const updated = updatePersonProfile(root, id, body.fields ?? {});
-        let warning = null;
-        // Editing the ACTIVE person changes what is searched for right now.
-        if (updated.active) {
-          if (runState.running) {
-            throw Object.assign(new Error(`saved — the change applies after the ${runState.phase} run finishes`), { statusCode: 409 });
-          }
-          activateProfile(root, id);
-          warning = reloadConfig();
-          if (!warning) scheduleRescore();
-        }
-        return sendJson(res, 200, { ...updated, warning });
-      });
-    }
-    if (req.method === 'POST' && path === '/api/search-profiles/from-resume') {
-      const body = await readBody(req);
-      /**
-       * A RUN IN PROGRESS OWNS THE CONFIGURATION IT STARTED WITH.
-       *
-       * Activation rewrites candidate.json, scoring.json, exclusions.json and
-       * the screening answers, then reloads the in-memory config. An auto-apply
-       * batch holds a queue of packets built BEFORE that, but reads `config`
-       * fresh on every iteration — so activating mid-batch filled the remaining
-       * jobs with one profile's screening answers onto another profile's
-       * documents, in the same run. The batch is short and the switch can wait.
-       */
-      // "keep" is an explicit no-op and changes no configuration.
-      if (runState.running && String(body.choice ?? '') !== 'keep') {
-        return sendJson(res, 409, {
-          error: `a ${runState.phase} run is in progress — wait for it to finish before switching search profiles, `
-            + 'so one batch cannot mix two profiles\' answers and documents',
-        });
-      }
-      return saving(res, async () => {
-        const root = requireConfigRoot();
-        const choice = String(body.choice ?? '');
-        const proposed = await proposeProfileFromResume(root, masterResumeFile(root));
-
-        if (choice === 'keep') {
-          // DURABLY recorded, not merely acknowledged in the response. This
-          // returned a message and wrote nothing, so the drawer re-ran the
-          // comparison on its next render and asked the same question again —
-          // a decision the user had already made, over and over.
-          //
-          // "Keep" is also the one choice that still means something with no
-          // resume on disk: there is nothing to compare against, so there is
-          // nothing to record, and the answer is the same either way.
-          const ack = proposed.available
-            ? acknowledgeResumeMismatch(root, proposed.resumeFingerprint)
-            : { acknowledged: false };
-          return sendJson(res, 200, {
-            choice,
-            changed: false,
-            acknowledged: ack.acknowledged,
-            message: ack.acknowledged
-              ? 'Your current search goals are unchanged. This resume will not be queried again unless you edit it.'
-              : 'Your current search goals are unchanged.',
-          });
-        }
-        if (!proposed.available) throw new Error(proposed.reason);
-
-        if (choice === 'create') {
-          // REFUSE BEFORE SAVING. Activation rejects a profile with no target
-          // roles, but this route used to save first — so the refusal left an
-          // unusable profile on disk, and every retry added another copy.
-          if (!(proposed.proposal.searchIntent?.targetRoles ?? []).length) {
-            throw Object.assign(new Error(
-              'No job titles could be read from this resume, so a profile made from it would search for nothing. '
-              + 'Put each job title on its own line (or before its dates), then upload the resume again.',
-            ), { statusCode: 422 });
-          }
-          // Building again from the same resume — or for the same person whose
-          // saved profile cannot search — updates that profile instead of
-          // saving another copy beside it.
-          const reuseId = resumeProfileToReuse(root, proposed.proposal, proposed.resumeFingerprint);
-          // The new person gets their OWN workspace (their own jobs, resume and
-          // outputs), and the resume they were built from is copied into it, so
-          // switching back to the previous person never tailors from theirs.
-          const id = reuseId ?? proposed.proposal.id;
-          const workspace = (reuseId ? readSearchProfile(root, reuseId)?.workspace : '') || id;
-          const ownResume = workspacePaths(root, workspace).resume;
-          if (ownResume !== masterResumeFile(root)) {
-            mkdirSync(dirname(ownResume), { recursive: true });
-            copyFileSync(masterResumeFile(root), ownResume);
-          }
-          const saved = saveSearchProfile(root, {
-            ...proposed.proposal,
-            id,
-            workspace,
-            label: body.label || proposed.proposal.label,
-            background: { ...proposed.proposal.background, sourceFile: ownResume, resumeFingerprint: proposed.resumeFingerprint ?? '' },
-          });
-          // Saving is not activating: a new profile never takes over the search
-          // without a second, deliberate action.
-          const viewedDb = db;
-          if (body.activate === true) {
-            const summary = activateProfile(root, saved.id);
-            const warning = reloadConfig();
-            const workspaceChanged = useActiveWorkspace();
-            const seed = body.seed === true ? seedNewPerson(root, saved.id, viewedDb) : { seeded: 0 };
-            if (!warning) scheduleRescore();
-            return sendJson(res, 200, { choice, changed: true, ...saved, activated: summary, warning, workspaceChanged, seeded: seed.seeded });
-          }
-          return sendJson(res, 200, { choice, changed: true, ...saved, activated: null });
-        }
-        if (choice === 'merge') {
-          const merged = mergeIntoActiveProfile(root, {
-            roles: Array.isArray(body.roles) ? body.roles : [],
-            skills: Array.isArray(body.skills) ? body.skills : [],
-            industries: Array.isArray(body.industries) ? body.industries : [],
-          });
-          const summary = activateProfile(root, merged.id);
-          const warning = reloadConfig();
-          if (!warning) scheduleRescore();
-          return sendJson(res, 200, { choice, changed: true, ...merged, activated: summary, warning });
-        }
-        throw new Error('choice must be one of: create, keep, merge');
-      });
-    }
-
-    // ── Application profile ────────────────────────────────────────────────
-    // The values the form filler types, the answers it draws on, and the
-    // questions it could not answer. Editing them here replaces hand-editing
-    // two JSON files, and every write is validated before it reaches disk.
-    if (req.method === 'GET' && path === '/api/profile') {
-      return sendJson(res, 200, profileState());
-    }
-    if (req.method === 'POST' && path === '/api/profile') {
-      const body = await readBody(req);
-      return saving(res, () => {
-        const root = requireConfigRoot();
-        if (!body.values || typeof body.values !== 'object' || Array.isArray(body.values)) {
-          throw new Error('send { values: { "<field path>": "<value>" } }');
-        }
-        const saved = writeProfile(root, body.values);
-        return sendJson(res, 200, { ...saved, warning: reloadConfig(), profile: readProfile(root) });
-      });
-    }
-    if (req.method === 'POST' && path === '/api/profile/adopt') {
-      const body = await readBody(req);
-      const titles = Array.isArray(body.titles) ? body.titles.slice(0, 40) : [];
-      const skills = Array.isArray(body.skills) ? body.skills.slice(0, 200) : [];
-      if (!titles.length && !skills.length) {
-        return sendJson(res, 400, { error: 'nothing was selected to adopt' });
-      }
-      if (runState.running) {
-        return sendJson(res, 409, { error: `a ${runState.phase} run is in progress — try again when it finishes` });
-      }
-      return saving(res, () => {
-        const result = adoptResumeEvidence(requireConfigRoot(), { titles, skills });
-        // targetTitles drives every query-first source and Workday's derived
-        // phrases, so the in-memory config must not keep serving the old list —
-        // and verdicts judged against the old titles are re-scored.
-        const warning = reloadConfig();
-        if (!warning) scheduleRescore();
-        return sendJson(res, 200, { ...result, warning, suggestions: resumeSuggestions() });
-      });
-    }
-    if (req.method === 'POST' && path === '/api/profile/answers') {
-      const body = await readBody(req);
-      return saving(res, () => {
-        const root = requireConfigRoot();
-        const saved = writeScreeningAnswers(root, {
-          defaults: body.defaults ?? {},
-          answers: Array.isArray(body.answers) ? body.answers : [],
-        });
-        return sendJson(res, 200, { ...saved, warning: reloadConfig(), screening: readScreeningAnswers(root) });
-      });
-    }
-    if (req.method === 'POST' && path === '/api/profile/questions/answer') {
-      const body = await readBody(req);
-      return saving(res, () => {
-        const root = requireConfigRoot();
-        // The original question travels with the answer so the truthfulness
-        // check can see the POLARITY of what is being answered, not just the
-        // text of the answer. That is the only way an affirmative reply to a
-        // reversed sponsorship question can be caught.
-        const saved = upsertScreeningAnswer(root, {
-          id: body.id,
-          patterns: Array.isArray(body.patterns) ? body.patterns : [],
-          answer: body.answer,
-          type: body.type,
-        }, { question: body.question, replace: body.replace === true });
-        if (body.key) markQuestionAnswered(root, String(body.key), { answerId: saved.id, now: nowDate() });
-        return sendJson(res, 200, { ...saved, warning: reloadConfig(), ...profileState() });
-      });
-    }
-    if (req.method === 'POST' && path === '/api/profile/questions/status') {
-      const body = await readBody(req);
-      return saving(res, () => {
-        const root = requireConfigRoot();
-        const key = String(body.key ?? '');
-        if (!key) throw new Error('which question? send its key');
-        const outcome = body.status === 'open'
-          ? reopenQuestion(root, key)
-          : dismissQuestion(root, key, { now: nowDate() });
-        if (!outcome.ok) throw new Error(outcome.reason);
-        return sendJson(res, 200, profileState());
-      });
-    }
-    if (req.method === 'GET' && path === '/api/data-quality') {
-      return sendJson(res, 200, dataQualitySummary(db, config, { now: nowDate(), enrichmentState: enrichmentStatus() }));
-    }
-    if (req.method === 'GET' && path === '/api/enrichment') {
-      return sendJson(res, 200, enrichmentStatus());
-    }
-    if (req.method === 'POST' && path === '/api/enrichment/start') {
-      await readBody(req);
-      const out = startEnrichmentPass('manual');
-      return sendJson(res, out.started ? 202 : 409, out.started ? enrichmentStatus() : { error: out.reason });
-    }
-    if (req.method === 'POST' && path === '/api/enrichment/stop') {
-      await readBody(req);
-      enrichment.controller?.abort();
-      return sendJson(res, 200, enrichmentStatus());
-    }
-    if (req.method === 'POST' && path === '/api/settings') {
-      const body = await readBody(req);
-      if (!config?.root) return sendJson(res, 400, { error: 'settings need a project root' });
-      const before = freshnessSummary(config);
-      let settings;
-      try {
-        settings = writeUserSettings(config.root, body);
-      } catch (err) {
-        return sendJson(res, err.statusCode ?? 500, { error: sanitizeErrorMessage(err.message) });
-      }
-      const warning = reloadConfig();
-      const after = freshnessSummary(config);
-      // A new window or retention changes verdicts already on the board; the
-      // same deferred re-judge a profile switch uses applies them.
-      if (before.discoveryWindow !== after.discoveryWindow || before.retentionDays !== after.retentionDays) {
-        scheduleRescore();
-      }
-      return sendJson(res, 200, { settings, warning, freshness: after, enrichment: enrichmentStatus() });
-    }
-    if (path === '/api/postings/sweep' && req.method === 'GET') {
-      const { running, last, startedAt, finishedAt } = postingSweep;
-      return sendJson(res, 200, { running, last, startedAt, finishedAt });
-    }
-    if (path === '/api/postings/sweep' && req.method === 'POST') {
-      const body = await readBody(req);
-      if (postingSweep.running) return sendJson(res, 409, { error: 'a posting check is already running' });
-      if (runState.running) return sendJson(res, 409, { error: `a ${runState.phase} run is in progress — try again when it finishes` });
-      const limit = Math.max(1, Math.min(2000, Number(body?.limit) || 300));
-      // Re-check everything asked for, not just what is a day old.
-      track(runPostingSweep({ limit, maxAgeHours: Number(body?.maxAgeHours ?? 1) }));
-      return sendJson(res, 202, { started: true, limit });
-    }
-    if (req.method === 'GET' && path === '/api/health') {
-      // Full doctor pass (config, resume, python, browsers, dirs) — the
-      // Settings page's system-health panel. Doctor spawns Python etc., so it
-      // runs on demand only, never on the landing path.
-      return sendJson(res, 200, await healthReport());
-    }
-    if (req.method === 'GET' && path === '/api/export/jobs.csv') {
-      const csv = exportRowsToCsv(buildExportRows(db, { now: nowDate() }));
-      res.writeHead(200, {
-        'content-type': 'text/csv; charset=utf-8',
-        'content-disposition': 'attachment; filename="jobagent_jobs.csv"',
-      });
-      res.end(csv);
-      return;
-    }
-    if (req.method === 'GET' && path === '/api/export/tracker.csv') {
-      const root = config?.root;
-      if (!root) return sendJson(res, 400, { error: 'no project root configured for export' });
-      // Explicit download: flush any pending debounced write, then rewrite
-      // synchronously so the bytes the user gets are never stale.
-      flushTracker();
-      const writeImpl = deps.writeJobTrackerImpl ?? writeJobTracker;
-      const { path: csvPath } = writeImpl(db, root);
-      const csv = (deps.readTextImpl ?? ((p) => readFileSync(p, 'utf8')))(csvPath);
-      res.writeHead(200, {
-        'content-type': 'text/csv; charset=utf-8',
-        'content-disposition': 'attachment; filename="job_tracker.csv"',
-      });
-      res.end(csv);
-      return;
-    }
-    if (req.method === 'POST' && path === '/api/run') {
-      const body = await readBody(req);
-      if (!RUN_PHASES.has(body.phase)) {
-        return sendJson(res, 400, { error: `phase must be one of: ${[...RUN_PHASES].join(', ')}` });
-      }
-      return sendJson(res, 202, await startRun(body.phase));
-    }
-    if (req.method === 'POST' && path === '/api/auto-apply/eligibility') {
-      const body = await readBody(req);
-      const ids = batchJobIds(body.jobIds);
-      if (ids.length === 0) return sendJson(res, 400, { error: 'select at least one job to preview' });
-      return sendJson(res, 200, autoApplyEligibility(ids, body.autoSubmit === true));
-    }
-    if (req.method === 'POST' && path === '/api/assist-batch') {
-      const body = await readBody(req);
-      // "Assist" and the UI's "Auto-apply" always mean prepare + approve +
-      // fill for review. A stray/legacy autoSubmit boolean must never turn this
-      // ordinary action into a final submission.
-      return sendJson(res, 202, startAssistBatch(body.jobIds, { autoSubmit: false }));
-    }
-    if (req.method === 'POST' && path === '/api/auto-submit-batch') {
-      const body = await readBody(req);
-      if (body.confirmed !== true) {
-        return sendJson(res, 400, {
-          error: 'auto-submit requires confirmed:true for this specific run',
-        });
-      }
-      return sendJson(res, 202, startAssistBatch(body.jobIds, { autoSubmit: true }));
-    }
-    if (req.method === 'POST' && path === '/api/approve-batch') {
-      const body = await readBody(req);
-      const ids = batchJobIds(body.jobIds);
-      const approved = [];
-      const failed = [];
-      for (const jobId of ids) {
-        try { approveJobPacket(db, jobId); approved.push(jobId); }
-        catch (err) { failed.push({ jobId, error: err.message }); }
-      }
-      refreshTracker();
-      return sendJson(res, 200, { approved, failed });
-    }
-    if (req.method === 'POST' && path === '/api/prepare-batch') {
-      const body = await readBody(req);
-      const ids = batchJobIds(body.jobIds);
-      if (ids.length === 0) return sendJson(res, 400, { error: 'select at least one job to prepare' });
-      if (runState.running) {
-        return sendJson(res, 409, { error: `busy: ${runState.phase} is in progress` });
-      }
-      const prepareLock = takeRunLock('prepare-selected');
-      // Reset the FULL run state, including runId/rca/progress. Leaving the
-       // previous run's `progress` in place made the header report stale
-       // counters (e.g. "prepare-selected (3) running… 13/13").
-      Object.assign(runState, {
-        running: true, phase: `prepare-selected (${ids.length})`,
-        startedAt: new Date().toISOString(), finishedAt: null, lastError: null,
-        cancelRequested: false, runId: randomUUID(), rca: [], partial: false,
-        progress: {
-          total: ids.length, completed: 0, currentJobId: null,
-          items: ids.map((jobId) => ({ jobId, status: 'queued' })),
-        },
-      });
-      track((async () => {
-        try {
-          const prepareImpl = deps.prepareForJobsFn ?? preparePacketsForJobs;
-          const r = await prepareImpl({
-            config, db, logger, jobIds: ids,
-            deps: { ...deps, shouldCancel: () => runState.cancelRequested },
-          });
-          refreshTracker();
-          // Mirror the outcome onto the progress items so the UI can show which
-          // specific jobs were prepared and which failed.
-          if (runState.progress?.items) {
-            const failedById = new Map((r.failed ?? []).map((f) => [f.jobId, f.error]));
-            for (const item of runState.progress.items) {
-              const failure = failedById.get(item.jobId);
-              Object.assign(item, failure
-                ? { status: 'failed', error: failure }
-                : { status: 'prepared' });
-            }
-            runState.progress.completed = runState.progress.items.length;
-          }
-          runState.lastResult = {
-            phase: 'prepare-selected',
-            counters: { jobs_prepared: r.prepared.length },
-            prepared: r.prepared, failed: r.failed,
-          };
-        } catch (err) {
-          runState.lastError = `prepare-selected failed: ${err.message}`;
-        } finally {
-          runState.running = false;
-          runState.finishedAt = new Date().toISOString();
-          prepareLock.release();
-        }
-      })());
-      return sendJson(res, 202, { started: true, queued: ids.length });
-    }
-    if (req.method === 'POST' && path === '/api/decide-batch') {
-      const body = await readBody(req);
-      const ids = batchJobIds(body.jobIds);
-      const updated = [];
-      const failed = [];
-      for (const jobId of ids) {
-        try { applyDecision(db, jobId, body.decision, { reason: body.reason ?? null }); updated.push(jobId); }
-        catch (err) { failed.push({ jobId, error: err.message }); }
-      }
-      refreshTracker();
-      return sendJson(res, 200, { updated, failed, decision: body.decision });
-    }
-    if (req.method === 'POST' && path === '/api/add-url') {
-      const body = await readBody(req);
-      const ingestImpl = deps.ingestUrlFn ?? ingestUrl;
-      const result = await ingestImpl({ config, db, logger, url: body.url, deps });
-      refreshTracker();
-      return sendJson(res, 200, result);
-    }
-
-    const resumeMatch = path.match(/^\/api\/jobs\/([^/]+)\/resume$/);
-    if (req.method === 'GET' && resumeMatch) {
-      const jobId = decodeURIComponent(resumeMatch[1]);
-      const requested = url.searchParams.get('format') ?? 'auto';
-      if (!['auto', 'pdf', 'docx'].includes(requested)) {
-        return sendJson(res, 400, { error: 'resume format must be auto, pdf, or docx' });
-      }
-      const artifact = readResumePreview(jobId, requested);
-      // The PDF is intentionally embeddable only by this same-origin local
-      // dashboard. DOCX remains a download because browsers cannot render it.
-      res.setHeader('x-frame-options', artifact.inline ? 'SAMEORIGIN' : 'DENY');
-      res.setHeader('content-security-policy', artifact.inline
-        ? "default-src 'none'; frame-ancestors 'self'"
-        : "default-src 'none'; frame-ancestors 'none'");
-      res.writeHead(200, {
-        'content-type': artifact.type,
-        'content-length': artifact.bytes.length,
-        'content-disposition': `${artifact.inline ? 'inline' : 'attachment'}; filename="${artifact.name.replace(/["\r\n]/g, '_')}"`,
-      });
-      res.end(artifact.bytes);
-      return;
-    }
-
-    const jobMatch = path.match(/^\/api\/jobs\/([^/]+)(?:\/([a-z-]+))?$/);
-    if (jobMatch) {
-      const [, jobId, action] = jobMatch.map((s) => (s ? decodeURIComponent(s) : s));
-      if (req.method === 'GET' && !action) {
-        const detail = jobDetail(db, jobId, { ...deps, root: config?.root ?? null, config, now: nowDate() });
-        if (!detail) return sendJson(res, 404, { error: `unknown job id: ${jobId}` });
-        return sendJson(res, 200, detail);
-      }
-      if (req.method === 'POST' && action === 'resume-preview') {
-        const result = await materializeResumePreview(jobId);
-        return sendJson(res, 200, result);
-      }
-      if (req.method === 'POST' && action === 'check-link') {
-        const job = db.getJob?.(jobId);
-        if (!job) return sendJson(res, 404, { error: `unknown job id: ${jobId}` });
-        if (!isSafeObservedApplicationUrl(job.url)) {
-          return sendJson(res, 400, { error: 'job URL must be a non-local HTTP(S) address' });
-        }
-        const checker = deps.checkLinkFn ?? checkJobLink;
-        const result = await checker(job.url, { ...deps, job: { id: job.id, url: job.url, source: job.source } });
-        // A definitive answer from the ATS is recorded; a closed posting nobody
-        // acted on leaves the board (discarded, "expired: …"), as the sweep does.
-        let retired = false;
-        const state = result?.liveness?.state;
-        if (state === 'open' || state === 'closed') {
-          try {
-            retired = db.recordPostingCheck?.(jobId, { state, via: result.liveness.via })?.retired === true;
-            noteUserMutation();
-          } catch { /* the check result is still worth returning */ }
-        }
-        return sendJson(res, 200, { ...result, retired });
-      }
-      if (req.method === 'POST' && action === 'link') {
-        const job = db.getJob?.(jobId);
-        if (!job) return sendJson(res, 404, { error: `unknown job id: ${jobId}` });
-        const body = await readBody(req);
-        const replacement = String(body.url ?? '').trim();
-        if (!isSafeObservedApplicationUrl(replacement)) {
-          return sendJson(res, 400, { error: 'replacement must be a non-local HTTP(S) job URL' });
-        }
-        if (isAggregatorUrl(replacement)) {
-          return sendJson(res, 400, { error: 'use the direct employer/ATS application URL, not another aggregator link' });
-        }
-        db.upsertJob({ id: jobId, url: replacement });
-        refreshTracker();
-        return sendJson(res, 200, { updated: true, jobId, url: replacement });
-      }
-      if (req.method === 'POST' && action === 'decision') {
-        const body = await readBody(req);
-        // Optional `reason` (DECISION_REASONS) + `reasonNote` (<= 200 chars).
-        const result = applyDecision(db, jobId, body.decision, { reason: body.reason ?? null, reasonNote: body.reasonNote ?? null });
-        refreshTracker();
-        return sendJson(res, 200, result);
-      }
-      // Revert the most recent decision on ONE job, restoring the exact
-      // decision and reason it replaced (409 when there is nothing to undo).
-      if (req.method === 'POST' && action === 'undo-decision') {
-        await readBody(req);
-        const result = undoDecision(db, jobId);
-        refreshTracker();
-        return sendJson(res, 200, result);
-      }
-      if (req.method === 'POST' && action === 'approve') {
-        const result = approveJobPacket(db, jobId);
-        refreshTracker();
-        return sendJson(res, 200, result);
-      }
-      if (req.method === 'POST' && action === 'reject-packet') {
-        const result = rejectJobPacket(db, jobId);
-        refreshTracker();
-        return sendJson(res, 200, result);
-      }
-      if (req.method === 'POST' && action === 'mark-submitted') {
-        const body = await readBody(req);
-        const result = markSubmittedByHuman(db, jobId, {
-          now: nowDate(),
-          confirmationNumber: body.confirmationNumber,
-          verified: body.verified === true,
-          note: body.note,
-        });
-        // Keep the privacy-minimized resumable checkpoint aligned when one
-        // exists. Legacy jobs without a checkpoint remain valid DB records.
-        try {
-          const approval = db.getApprovalByJob?.(jobId);
-          const packet = approval
-            ? (deps.loadPacketImpl ? deps.loadPacketImpl(approval) : loadPacket(approval))
-            : null;
-          if (packet && config?.root) {
-            const evidence = [body.confirmationNumber, body.note].filter(Boolean);
-            await markApplicationUserSubmitted({ root: config.root, packet, evidence });
-            if (result.verified) {
-              await markApplicationVerified({ root: config.root, packet, evidence: evidence.length ? evidence : ['human confirmed submission evidence'] });
-            }
-          }
-        } catch (err) {
-          logger?.warn?.(`application-state submission sync skipped for ${jobId}: ${sanitizeErrorMessage(err.message)}`);
-        }
-        refreshTracker();
-        return sendJson(res, 200, result);
-      }
-      // Recruiting outcomes and follow-ups on a SUBMITTED application. Each is
-      // validated and appended as an event; none changes the job's status,
-      // submission or decision, and none approves or submits anything.
-      if (req.method === 'POST' && action === 'outcome') {
-        const body = await readBody(req);
-        return sendJson(res, 200, recordOutcome(db, jobId, {
-          outcome: body.outcome, on: body.on ?? null, note: body.note ?? null, now: nowDate(), config,
-        }));
-      }
-      if (req.method === 'POST' && action === 'undo-outcome') {
-        await readBody(req);
-        return sendJson(res, 200, undoOutcome(db, jobId, { now: nowDate(), config }));
-      }
-      if (req.method === 'POST' && action === 'follow-up') {
-        const body = await readBody(req);
-        return sendJson(res, 200, updateFollowUp(db, jobId, {
-          action: body.action, dueOn: body.dueOn ?? null, note: body.note ?? null, now: nowDate(), config,
-        }));
-      }
-      if (req.method === 'POST' && action === 'note') {
-        const body = await readBody(req);
-        const result = setJobNote(db, jobId, body.note);
-        // Notes travel in the tracker CSV; the refresh is debounced (400 ms).
-        refreshTracker();
-        return sendJson(res, 200, result);
-      }
-      if (req.method === 'POST' && action === 'assist') {
-        return sendJson(res, 202, await startAssist(jobId));
-      }
-      if (req.method === 'GET' && action === 'eligibility') {
-        return sendJson(res, 200, autoApplyEligibility(
-          [jobId], url.searchParams.get('autoSubmit') === 'true',
-        ).items[0]);
-      }
-      // One-click end-to-end: prepare (if needed) -> approve -> fill for human
-      // review. This named action NEVER clicks the final Submit button.
-      if (req.method === 'POST' && action === 'auto-apply') {
-        await readBody(req); // consume/validate any legacy JSON body
-        return sendJson(res, 202, startAssistBatch([jobId], { autoSubmit: false }));
-      }
+    // Each route module answers the requests it owns and returns NOT_HANDLED
+    // for the rest, in the same order the routes were written in originally.
+    for (const handle of API_ROUTE_MODULES) {
+      const handled = await handle(ctx, req, res, { url, path });
+      if (handled !== NOT_HANDLED) return handled;
     }
 
     sendJson(res, 404, { error: `no route: ${req.method} ${path}` });
@@ -2906,11 +2184,14 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
 
   schedulePostingSweeps();
   scheduleRetentionSweeps();
+  scheduleBackups();
+  scheduleFollowUpAlerts();
   scheduleEnrichment();
   reconcilePackets();
+  recoverInterruptedFills();
 
   return {
-    server, runState, inFlight, flushTracker, browserAvailableCached, closeWorkspaceDbs,
+    server, runState, inFlight, flushTracker, browserAvailableCached, closeWorkspaceDbs, apiToken,
     // The LIVE bundle, not the one booted with: routes that rewrite config
     // files reload it into this closure, and `startDashboard` cannot see that
     // from its own immutable parameter.
@@ -2926,7 +2207,7 @@ export function createDashboardServer({ config: bootConfig, db, logger, deps = {
  */
 export function startDashboard({ config, db, logger, port = 4646, deps = {} } = {}) {
   const {
-    server, runState, inFlight, flushTracker, currentConfig, browserAvailableCached, closeWorkspaceDbs,
+    server, runState, inFlight, flushTracker, currentConfig, browserAvailableCached, closeWorkspaceDbs, apiToken,
   } = createDashboardServer({ config, db, logger, deps });
   return new Promise((resolve, reject) => {
     server.once('error', (err) => {
@@ -2949,6 +2230,9 @@ export function startDashboard({ config, db, logger, port = 4646, deps = {} } = 
         runState,
         port: actual,
         url: `http://127.0.0.1:${actual}`,
+        /** The access token (null when disabled), and the link that unlocks the page. */
+        apiToken,
+        unlockUrl: unlockUrl(`http://127.0.0.1:${actual}`, apiToken),
         /**
          * The config bundle the server is CURRENTLY serving.
          *
@@ -2974,6 +2258,8 @@ export function startDashboard({ config, db, logger, port = 4646, deps = {} } = 
           // so shutting down never loses the last action's CSV update.
           try { flushTracker(); } catch { /* best effort on shutdown */ }
           closeWorkspaceDbs();
+          // The PDF printer's shared browser (RISK-04) must not outlive the server.
+          try { const { closePdfBrowsers } = await import('../resume/chromiumPdf.js'); await closePdfBrowsers(); } catch { /* none open */ }
         },
       });
     });
@@ -3028,44 +2314,16 @@ export function installProcessSafetyNet({ runState, logger, proc = process, exit
   };
 }
 
-/* ------------------------------- helpers --------------------------------- */
-
-/** Hostnames that mean "this machine's browser talking to its own dashboard". */
-const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
-
 /**
- * Is this Host header a loopback host (any port)? A missing Host is allowed —
- * only ancient non-browser clients omit it, and the socket is loopback-bound.
+ * Is this Host header a loopback host (any port)? A missing Host is refused:
+ * every browser and HTTP/1.1 client sends one, and SECURITY.md promises that
+ * only loopback Hosts are served.
  * @param {string|undefined} host
  */
 export function isLoopbackHost(host) {
-  if (!host) return true;
+  if (!host) return false;
   try {
     return LOOPBACK_HOSTNAMES.has(new URL(`http://${host}`).hostname);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Is this Origin header acceptable for a state-changing request? Absent means
- * a same-origin/non-browser client (fetch/curl); "null" is an opaque origin
- * (sandboxed iframe, file://) and is rejected like any foreign site.
- * @param {string|undefined} origin
- */
-export function isAllowedOrigin(origin, port) {
-  if (origin === undefined || origin === '') return true;
-  if (origin === 'null') return false;
-  try {
-    const url = new URL(origin);
-    if (!LOOPBACK_HOSTNAMES.has(url.hostname)) return false;
-    // Loopback is not one origin: a dev server or another local app on
-    // 127.0.0.1:3000 is a different site, and its "simple" text/plain POST
-    // reaches us without a CORS preflight. When the caller knows our port,
-    // only a page served from THIS dashboard may change state.
-    if (port === undefined) return true;
-    const originPort = url.port || (url.protocol === 'https:' ? '443' : '80');
-    return originPort === String(port);
   } catch {
     return false;
   }
@@ -3083,67 +2341,6 @@ export function isTrustedMutation(req) {
   return type === 'application/json';
 }
 
-/** JSON bodies at least this large are gzipped when the client accepts it. */
-const GZIP_MIN_BYTES = 64 * 1024;
-
-/** Does the request that produced `res` accept gzip? */
-function acceptsGzip(res) {
-  return /\bgzip\b/i.test(String(res.req?.headers?.['accept-encoding'] ?? ''));
-}
-
-function sendJson(res, status, body) {
-  const text = JSON.stringify(body);
-  // Measured live: a default 100-row board page is ~210 KB and the full stats
-  // payload is larger; gzip cuts JSON like this ~8x for a few ms of CPU.
-  if (text.length >= GZIP_MIN_BYTES && acceptsGzip(res)) {
-    const zipped = gzipSync(text);
-    res.writeHead(status, {
-      'content-type': 'application/json; charset=utf-8',
-      'content-encoding': 'gzip',
-      vary: 'Accept-Encoding',
-      'content-length': zipped.length,
-    });
-    res.end(zipped);
-    return;
-  }
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-  res.end(text);
-}
-
-function setExtensionCors(res, origin) {
-  res.setHeader('access-control-allow-origin', origin);
-  res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
-  res.setHeader('access-control-allow-headers', 'content-type, x-job-agent-key');
-  res.setHeader('access-control-max-age', '600');
-  res.setHeader('vary', 'Origin');
-}
-
-function isAggregatorUrl(value) {
-  try {
-    return /(^|\.)(linkedin|indeed|glassdoor|dice|ziprecruiter)\./i.test(new URL(value).hostname);
-  } catch { return false; }
-}
-
-/**
- * A URL is only an application URL if it is a PUBLIC http(s) address. Delegates
- * to the shared guard so this endpoint, the link-replacement endpoint, and
- * add-url all reject the same things (loopback, RFC-1918, link-local/metadata,
- * internal hostnames, embedded credentials).
- */
-function isSafeObservedApplicationUrl(value) {
-  return isPublicHttpUrl(value);
-}
-
-function batchJobIds(value) {
-  const ids = Array.isArray(value)
-    ? [...new Set(value.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim()))]
-    : [];
-  if (ids.length > MAX_BATCH_JOBS) {
-    throw Object.assign(new Error(`batch is limited to ${MAX_BATCH_JOBS} jobs`), { statusCode: 400 });
-  }
-  return ids;
-}
-
 /** Defense-in-depth headers for every page, API response, and static asset. */
 function setSecurityHeaders(res) {
   res.setHeader('content-security-policy', [
@@ -3155,7 +2352,7 @@ function setSecurityHeaders(res) {
     "form-action 'self'",
     "img-src 'self' data:",
     "object-src 'none'",
-    // The SPA now loads from /assets/js/app.js and uses delegated listeners
+    // The SPA loads from /assets/js/main.js and uses delegated listeners
     // instead of inline on* handlers, so inline SCRIPT is no longer permitted
     // at all — an injected <script> or handler cannot execute.
     "script-src 'self'",
@@ -3273,70 +2470,4 @@ function cachedAsset(abs) {
   const entry = { mtimeMs: st.mtimeMs, size: st.size, bytes, gzip, etag, type };
   STATIC_CACHE.set(abs, entry);
   return entry;
-}
-
-/**
- * Read and parse a JSON request body (empty body -> {}).
- *
- * @param {import('node:http').IncomingMessage} req
- * @param {number} [maxBytes=1e6] cap for this route. Only the master-resume
- *   upload raises it; every other endpoint keeps the small default so a stray
- *   local request cannot make the dashboard buffer megabytes.
- */
-/**
- * A resume sent as base64 JSON ({ contentBase64 }) -> its bytes, or a 400.
- * Same checks as the master-resume upload: strict base64 (Buffer.from would
- * silently drop bad characters), the size cap, and a real .docx.
- */
-function decodeResumeUpload(body = {}) {
-  const encoded = String(body.contentBase64 ?? '');
-  const fail = (message, statusCode = 400) => { throw Object.assign(new Error(message), { statusCode }); };
-  if (!encoded) fail('no file contents were received');
-  if (!/^[A-Za-z0-9+/\r\n]*={0,2}$/.test(encoded)) fail('the file contents were not transferred correctly, try again');
-  const bytes = Buffer.from(encoded, 'base64');
-  if (bytes.length > MAX_MASTER_RESUME_BYTES) fail(`that file is over ${Math.round(MAX_MASTER_RESUME_BYTES / 1024 / 1024)} MB`, 413);
-  if (!isDocxBuffer(bytes)) fail('that is not a Word (.docx) file — save it as .docx and try again');
-  return bytes;
-}
-
-function readBody(req, maxBytes = 1_000_000) {
-  return new Promise((resolve, reject) => {
-    /** @type {Buffer[]} */
-    let chunks = [];
-    let size = 0;
-    let tooLarge = false;
-    const fail = (message, statusCode) => reject(Object.assign(new Error(message), { statusCode }));
-    req.on('data', (chunk) => {
-      if (tooLarge) {
-        // Keep DRAINING an over-sized body instead of destroying the socket.
-        // Killing it here meant the browser reported a generic network failure
-        // and never saw the 413 that explains what to do about it.
-        size += chunk.length;
-        // A client that keeps streaming far past the limit is not a mistake.
-        if (size > maxBytes * 4) req.destroy();
-        return;
-      }
-      size += chunk.length;
-      if (size > maxBytes) {
-        tooLarge = true;
-        chunks = []; // release what was buffered
-        return;
-      }
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-    req.on('end', () => {
-      if (tooLarge) return fail('body too large', 413);
-      const data = Buffer.concat(chunks).toString('utf8');
-      if (!data.trim()) return resolve({});
-      let parsed;
-      try { parsed = JSON.parse(data); }
-      catch { return fail('invalid JSON body', 400); }
-      // Every route reads fields off the body; a bare `null` or `42` would
-      // surface as a TypeError (500) instead of a clear 400.
-      if (parsed === null || typeof parsed !== 'object') return fail('JSON body must be an object', 400);
-      resolve(parsed);
-    });
-    req.on('error', (err) => reject(err));
-    req.on('aborted', () => fail('the request was interrupted before it finished', 400));
-  });
 }

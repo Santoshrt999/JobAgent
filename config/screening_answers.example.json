@@ -9,7 +9,6 @@
       "id": "years_experience",
       "patterns": [
         "years of experience",
-        "how many years",
         "total experience"
       ],
       "answer": "YOUR total years of professional experience.",
@@ -32,7 +31,6 @@
         "require sponsorship",
         "need sponsorship",
         "visa sponsorship",
-        "will you require",
         "now or in the future require sponsorship",
         "sponsor you for a visa",
         "need an employer to sponsor",

@@ -49,9 +49,14 @@ afterAll(async () => {
 });
 
 describe('response body reads are covered by the request timeout', () => {
+  // The timeout covers the headers too. At 150 ms this failed once in a full
+  // parallel run (177 files) because the headers themselves arrived late; alone
+  // it passed 5 of 5. One second is still far below the 3 s "did not hang" bound.
+  const STALL_TIMEOUT_MS = 1000;
+
   it('rejects a stalled res.json() with a retryable ETIMEDOUT instead of hanging', async () => {
     const started = Date.now();
-    const res = await fetchWithTimeout(fetch, `${base}/stall`, {}, 150);
+    const res = await fetchWithTimeout(fetch, `${base}/stall`, {}, STALL_TIMEOUT_MS);
     expect(res.ok).toBe(true);
     const err = await res.json().catch((e) => e);
     expect(err).toBeInstanceOf(Error);
@@ -61,7 +66,7 @@ describe('response body reads are covered by the request timeout', () => {
   });
 
   it('fetchJsonWithTimeout times out a stalled body too', async () => {
-    const err = await fetchJsonWithTimeout(fetch, `${base}/stall`, {}, 150, 'Test').catch((e) => e);
+    const err = await fetchJsonWithTimeout(fetch, `${base}/stall`, {}, STALL_TIMEOUT_MS, 'Test').catch((e) => e);
     expect(err.code).toBe('ETIMEDOUT');
   });
 

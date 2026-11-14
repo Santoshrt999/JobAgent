@@ -16,6 +16,8 @@ export default [
       'node_modules/**', 'coverage/**', 'reports/**', 'logs/**', 'data/**',
       'applications/output/**', 'resumes/output/**', '.cache/**', '.claude/**', '.agents/**',
       'playwright-report/**', 'test-results/**', 'PyProjects/**',
+      // A nested clone of the repository is someone's scratch copy, not source.
+      'JobAgent/**', 'JobAgent-public/**',
       // Local, gitignored scratch and browser-session directories.
       '.tmp/**', '.venv/**', 'venv/**', '.browser-profile*/**', '.impeccable/**',
       // Vendored/minified third-party code, if any lands in the public tree.

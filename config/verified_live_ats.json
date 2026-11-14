@@ -1,0 +1,4 @@
+{
+  "_comment": "ATS contracts verified on a LIVE site by a supervised run (docs/LIVE_VERIFICATION.md). Final Auto-submit is refused on any ATS not listed here. Add one entry per ATS after a successful supervised run. No personal data: no names, emails or job ids.",
+  "verified": []
+}

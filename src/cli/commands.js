@@ -30,6 +30,7 @@ import { writeFoundJobs } from '../outputs.js';
 import { emptyCounters } from '../outputs.js';
 import { LIFECYCLE, isProtectedJobRow } from '../lifecycle.js';
 import { assertPublicHttpUrl, publicOnlyFetch } from '../utils/publicUrl.js';
+import { createSafeFetch, safeFetch } from '../utils/safeFetch.js';
 import {
   listPending, approve, reject, APPROVAL_STATUS,
 } from '../apply/approvalQueue.js';
@@ -380,7 +381,7 @@ export async function runRescore({ config, db, logger, deps = {} } = {}) {
  * @param {import('../logging/db.js').Database} args.db
  * @param {object} [args.logger]
  * @param {string} args.url a public job posting URL
- * @param {object} [args.deps] { fetchImpl, now }
+ * @param {object} [args.deps] { fetchImpl, lookupImpl, now }
  * @returns {Promise<{ id, company, title, url, score, tier, sponsorship, appStatusHint, alreadyExisted }>}
  */
 export async function ingestUrl({ config, db, logger, url, deps = {} } = {}) {
@@ -396,15 +397,23 @@ export async function ingestUrl({ config, db, logger, url, deps = {} } = {}) {
     throw Object.assign(new Error(publicCheck.reason), { statusCode: 400 });
   }
   const now = deps.now ?? new Date();
-  // The check above covers the pasted URL only; this keeps every redirect hop
-  // public too, so a posting cannot bounce the read onto a private address and
-  // have that page's content saved as a "job".
-  const fetchImpl = publicOnlyFetch(deps.fetchImpl ?? fetch);
+  // The check above covers the pasted URL's shape only. The real fetch is
+  // safeFetch, which checks every hop AND the address each hop resolves to when
+  // it connects, so neither a redirect nor a public name that resolves to a
+  // private address can bounce the read onto this machine or the LAN. An
+  // injected fetch (tests) keeps the per-hop shape check.
+  const fetchImpl = deps.fetchImpl
+    ? publicOnlyFetch(deps.fetchImpl)
+    : (deps.lookupImpl ? createSafeFetch({ lookupImpl: deps.lookupImpl }) : safeFetch);
 
   let parsed;
   try {
     parsed = await fetchUrl(clean, { fetchImpl, source: 'manual-url', maxRetries: 1 });
   } catch (err) {
+    // An address the guard refused is the user's input problem, not the site's.
+    if (err?.code === 'BLOCKED_URL') {
+      throw Object.assign(new Error(err.message), { statusCode: 400 });
+    }
     // A blocked/erroring page is a normal outcome for bot-protected sites — be
     // honest rather than fabricate a job. Never bypass the protection.
     throw Object.assign(
@@ -488,23 +497,33 @@ export async function ingestUrl({ config, db, logger, url, deps = {} } = {}) {
  * but never the safety gates: packets still enter the approval queue).
  *
  * @param {object} args { config, db, logger, jobIds, deps }
- * @returns {Promise<{ prepared: Array<{jobId, packetPath}>, failed: Array<{jobId, error}> }>}
+ * @returns {Promise<{ prepared: Array<{jobId, packetPath}>, failed: Array<{jobId, error}>,
+ *   cancelled: Array<{jobId, reason}> }>}
  */
 export async function preparePacketsForJobs({ config, db, logger, jobIds = [], deps = {} } = {}) {
   const prepared = [];
   const failed = [];
+  // Kept apart from `failed`: a job the person stopped before it started did
+  // not break, and the run details must not paint it red (BUG-07).
+  const cancelled = [];
   const counters = { jobs_prepared: 0 };
 
   for (const jobId of jobIds) {
     // Cooperative cancel (dashboard Cancel button): stop between jobs.
     if (deps.shouldCancel?.()) {
-      failed.push({ jobId, error: 'cancelled before this job started' });
+      cancelled.push({ jobId, reason: 'cancelled before this job started' });
       continue;
     }
     const row = db.getJob(jobId);
     if (!row) { failed.push({ jobId, error: 'unknown job id' }); continue; }
     if (Number(row.applied) === 1) {
       failed.push({ jobId, error: 'already submitted — not re-preparing' });
+      continue;
+    }
+    // An unconfirmed submission is still a possible submission. Re-preparing
+    // reset it to "prepared", which erased the marker the duplicate guard reads.
+    if (row.status === 'submit_unverified') {
+      failed.push({ jobId, error: 'reported submitted but not confirmed — confirm or deny it before preparing again' });
       continue;
     }
     const job = {
@@ -528,7 +547,7 @@ export async function preparePacketsForJobs({ config, db, logger, jobIds = [], d
       logger?.error?.(`prepare-selected failed: ${err.message}`, {}, jobId);
     }
   }
-  return { prepared, failed, counters };
+  return { prepared, failed, cancelled, counters };
 }
 
 /**
@@ -557,6 +576,10 @@ export function loadPacket(approvalRow, deps = {}) {
 export async function runAssist({ config, db, logger, mode, options = {}, deps = {} } = {}) {
   const assistFn = deps.assistFn ?? assistApply;
   const effectiveMode = mode ?? 'LIVE_ASSIST';
+  // The CLI never submits. Enforce it here rather than trusting every caller:
+  // the only final-submit path is the dashboard's explicitly confirmed
+  // POST /api/auto-submit-batch, which does not come through this function.
+  const assistOptions = { ...options, autoSubmit: false };
 
   // Only act on packets a human has approved. Pending/rejected are skipped.
   const approvals = db.listApprovals({ status: APPROVAL_STATUS.APPROVED });
@@ -600,7 +623,7 @@ export async function runAssist({ config, db, logger, mode, options = {}, deps =
     }
 
     const result = await assistFn({
-      packet, config, mode: effectiveMode, approval, dailyCount, options,
+      packet, config, mode: effectiveMode, approval, dailyCount, options: assistOptions,
       // A confirmation page seen after hand-off is recorded as a human
       // submission awaiting the user's confirmation (never applied=1).
       deps: { onHumanSubmitted: (update) => recordAssistResult(db, approval.job_id, update), ...deps },
@@ -700,6 +723,10 @@ export function recordAssistResult(db, jobId, result) {
     // extension tab) can report AFTER the user pressed "Mark submitted";
     // writing its submit_unverified over applied=1 would un-submit the job.
     const existing = db.getJob?.(jobId);
+    // Never CREATE a job row from a run result. A store that does not hold
+    // this job (a late report after a profile switch, a stale extension tab)
+    // is the wrong store, and an upsert planted a stub row in it.
+    if (typeof db.getJob === 'function' && !existing) return;
     if (existing && (Number(existing.applied) === 1 || existing.status === 'submitted')) return;
     const patch = {
       id: jobId,
@@ -736,7 +763,16 @@ export function recordAssistResult(db, jobId, result) {
       patch.applied = 0;
       patch.status = LIFECYCLE.SUBMIT_UNVERIFIED;
     }
-    db.upsertJob(patch);
+    // Through the state machine, so the move is validated and leaves a
+    // status_changed event (retractSubmissionReport reads those to know where
+    // an unverified submission came from). Test doubles without it upsert.
+    if (typeof db.setJobStatus === 'function') {
+      const { id: _id, status, ...fields } = patch;
+      const reason = String(result.note ?? result.blockers?.[0] ?? '').slice(0, 200);
+      db.setJobStatus(jobId, status, { actor: 'assist', reason, patch: fields });
+    } else {
+      db.upsertJob(patch);
+    }
     // Persist the run's phase trail (Queued -> Precheck -> ... -> terminal) as
     // an audit event, so "where exactly did the last fill get to?" is
     // answerable from the job's history — and a resumed run appends a fresh
@@ -756,13 +792,10 @@ export function recordAssistResult(db, jobId, result) {
       }
     }
   } catch (err) {
-    // ANY submitted-claim write that fails must be loud — whether it was the
-    // verified applied=1 record or the defensive downgrade to
-    // submit_unverified, silently losing it invites a double-application (or
-    // an unverified submit the human is never asked to confirm). Everything
-    // else stays best-effort (the job may not be persisted in some flows).
-    if (result.submitted === true) {
-      throw new Error(`failed to record submitted application for ${jobId}: ${err.message}`, { cause: err });
-    }
+    // A result that cannot be stored must be loud. Swallowing it left the job
+    // showing its old status (often "ready to auto-fill") after a run that
+    // filled, blocked or submitted it, with nothing on screen to say so.
+    const what = result.submitted === true ? 'submitted application' : `auto-fill result (${result.status})`;
+    throw new Error(`failed to record ${what} for ${jobId}: ${err.message}`, { cause: err });
   }
 }

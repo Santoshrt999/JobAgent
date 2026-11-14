@@ -9,7 +9,115 @@
  */
 
 import { existsSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, extname } from 'node:path';
+
+import { documentFormats } from '../apply/fileUpload.js';
+
+/** MIME types an `accept` attribute may name, mapped to file extensions. */
+const MIME_EXTENSIONS = {
+  'application/pdf': ['.pdf'],
+  'application/msword': ['.doc'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+  'application/rtf': ['.rtf'],
+  'text/rtf': ['.rtf'],
+  'text/plain': ['.txt'],
+};
+
+/**
+ * Extensions a file input's `accept` attribute allows, or null for "anything"
+ * (no attribute, or a wildcard the document formats all satisfy).
+ * @param {string} accept
+ * @returns {Set<string>|null}
+ */
+export function acceptedExtensions(accept) {
+  const parts = String(accept ?? '').split(',').map((p) => p.trim().toLowerCase()).filter(Boolean);
+  if (!parts.length) return null;
+  const out = new Set();
+  for (const part of parts) {
+    if (part === '*/*' || part === 'application/*') return null;
+    if (part.startsWith('.')) out.add(part);
+    else if (part === 'text/*') out.add('.txt').add('.rtf');
+    else for (const ext of MIME_EXTENSIONS[part] ?? []) out.add(ext);
+  }
+  return out.size ? out : null;
+}
+
+/**
+ * The file to send to an input: the planned one when the input accepts it,
+ * else the same document in a format it does accept (documentFormats), else
+ * null with the accepted list for the message.
+ */
+export function fileForInput(path, accept, { alternates = [], fileExists = existsSync } = {}) {
+  const allowed = acceptedExtensions(accept);
+  if (!allowed) return { path, substituted: false };
+  const formats = [...new Set([...documentFormats(path, { fileExists }), ...alternates.filter((p) => p && fileExists(p))])];
+  const fit = formats.find((p) => allowed.has(extname(p).toLowerCase()));
+  if (fit) return { path: fit, substituted: fit !== path };
+  return { path: null, allowed: [...allowed] };
+}
+
+/* c8 ignore start - executes in the browser, not under node coverage */
+function slotText(index) {
+  const el = document.querySelectorAll('input[type="file"]')[index];
+  if (!el) return null;
+  // The widest box that still holds only this one file input: where a widget
+  // shows the attached file's name (Rippling clears the input itself).
+  let box = el;
+  for (let up = el.parentElement, depth = 0; up && depth < 6; up = up.parentElement, depth += 1) {
+    if (up.querySelectorAll('input[type="file"]').length > 1 || up.tagName === 'FORM') break;
+    box = up;
+  }
+  const titles = Array.from(box.querySelectorAll('[title], [aria-label]'))
+    .map((n) => `${n.getAttribute('title') || ''} ${n.getAttribute('aria-label') || ''}`).join(' ');
+  return `${box.textContent || ''} ${titles}`.replace(/\s+/g, ' ').trim().slice(0, 3000);
+}
+/* c8 ignore stop */
+
+async function readSlotText(page, index) {
+  if (!page || typeof page.evaluate !== 'function' || !Number.isInteger(index)) return null;
+  try { return await page.evaluate(slotText, index); } catch { return null; }
+}
+
+const FILE_COUNT = /\b([1-9]\d*)\s+files?\s+(?:selected|attached|uploaded|added)\b/i;
+const FILE_REJECTED = /\b(?:isn'?t supported|not supported|unsupported|not (?:an? )?(?:accepted|allowed|valid)|invalid file|too large|exceeds|failed to upload|upload failed)\b/i;
+
+/**
+ * Does the slot now SHOW this file? For widgets that read the file and then
+ * clear the input (Rippling), the FileList is empty although the file is
+ * attached, and the run reported "did not remain attached" for a resume that
+ * was on the form (2026-11-12). Evidence, any of:
+ *   - the file's name, whole or shortened with an ellipsis ("Priya_Raghunatha...docx");
+ *   - a count that went from none to "1 file selected".
+ * An error message in the slot always wins.
+ */
+export function slotShowsFile(before, after, path) {
+  const now = String(after ?? '');
+  if (!now) return { shown: false };
+  if (FILE_REJECTED.test(now) && !FILE_REJECTED.test(String(before ?? ''))) return { shown: false, rejected: true };
+  const name = basename(path);
+  const lower = now.toLowerCase();
+  if (lower.includes(name.toLowerCase())) return { shown: true, how: 'file name shown' };
+  const ext = extname(name).toLowerCase();
+  const stem = name.slice(0, name.length - ext.length).toLowerCase();
+  if (stem.length >= 8) {
+    const head = stem.slice(0, 8).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // "Priya_Raghunatha...docx": the ellipsis may swallow the extension's dot.
+    const tail = ext.slice(1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (tail && new RegExp(`${head}[^\\s]*?(?:\\.\\.\\.|…)[^\\s]*?\\.?${tail}\\b`, 'i').test(now)) return { shown: true, how: 'shortened file name shown' };
+  }
+  if (FILE_COUNT.test(now) && !FILE_COUNT.test(String(before ?? ''))) return { shown: true, how: 'file count shown' };
+  return { shown: false };
+}
+
+/** Wait (briefly) for a widget to show the file it was given. */
+async function waitForSlot(page, index, before, path, { timeoutMs = 4000, pollMs = 250 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = slotShowsFile(before, await readSlotText(page, index), path);
+    if (result.shown || result.rejected || Date.now() >= deadline) return result;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
 
 /**
  * Read the browser's live FileList after setInputFiles. A successful API call
@@ -67,16 +175,27 @@ export function classifyFileInput(text) {
 function collectFileInputs(hints) {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const out = [];
+  // A site's chat assistant has its own hidden "Attachment" file input. It is
+  // never a form slot, and as the page's only file input it was chosen for the
+  // resume; the widget cleared the file and the run reported "did not remain
+  // attached" (Oracle Recruiting's email step, 2026-11-13).
+  const CHAT_WIDGET = '[class*="oda-chat"], [class*="chatbot" i], [class*="chat-widget" i], [id*="chatbot" i], [id*="chat-widget" i]';
+  // `index` stays the input's position among ALL file inputs on the page: the
+  // `nth=` selector and the slot reader both count that way.
   const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
   inputs.forEach((el, index) => {
+    if (el.closest(CHAT_WIDGET)) return;
     const parts = [];
-    for (const lab of Array.from(el.labels || [])) parts.push(text(lab));
-    parts.push(el.getAttribute('aria-label') || '');
-    for (const attr of ['aria-labelledby', 'aria-describedby']) {
-      for (const id of (el.getAttribute(attr) || '').split(/\s+/).filter(Boolean)) {
-        parts.push(text(document.getElementById(id)));
-      }
-    }
+    // Rippling wraps the input in a dropzone <label> whose own text is only
+    // "Drop or select (.doc / .docx / .pdf)"; the field's name ("Résumé",
+    // "Cover letter") is on the element that LABEL points at with
+    // aria-labelledby. Reading only the label's text left both slots unnamed
+    // (2026-11-12, a Rippling posting).
+    const referenced = (node) => ['aria-labelledby', 'aria-describedby']
+      .flatMap((attr) => (node.getAttribute(attr) || '').split(/\s+/).filter(Boolean))
+      .map((id) => text(document.getElementById(id)));
+    for (const lab of Array.from(el.labels || [])) parts.push(text(lab), ...referenced(lab));
+    parts.push(el.getAttribute('aria-label') || '', ...referenced(el));
     const legend = el.closest('fieldset')?.querySelector('legend');
     if (legend) parts.push(text(legend));
     // Nearest ancestor that holds exactly this one file input: its own label
@@ -89,7 +208,7 @@ function collectFileInputs(hints) {
       if (lab && text(lab)) { parts.push(text(lab).slice(0, 120)); break; }
     }
     parts.push(el.id || '', el.name || '', el.getAttribute('data-automation-id') || '',
-      el.closest('[id]')?.id || '');
+      el.getAttribute('data-testid') || '', el.closest('[id]')?.id || '');
     const matches = [];
     for (const [type, sel] of Object.entries(hints || {})) {
       if (!sel) continue;
@@ -98,6 +217,7 @@ function collectFileInputs(hints) {
     out.push({
       index,
       selector: `input[type="file"] >> nth=${index}`,
+      accept: el.getAttribute('accept') || '',
       text: parts.filter(Boolean).join(' | ').slice(0, 400),
       required: el.required === true || el.getAttribute('aria-required') === 'true',
       hintFor: matches,
@@ -189,17 +309,36 @@ export async function uploadFiles(page, fillPlan = {}, { dryRun = false, fileExi
         continue;
       }
       used.add(chosen.index);
+      // Send a format this input accepts: the planned file, or the same
+      // document in another format (a .txt cover letter was sent to a slot
+      // that takes only .doc/.docx/.pdf, and the form rejected it).
+      const file = fileForInput(u.path, chosen.accept, { alternates: u.alternates ?? [], fileExists });
+      if (!file.path) {
+        const message = `${u.type}: this form takes only ${file.allowed.join(', ')} files, and ${basename(u.path)} is not available in any of those formats`;
+        if (u.required === false) skipped.push({ type: u.type, path: u.path, reason: message });
+        else blockers.push(message);
+        continue;
+      }
       if (dryRun) {
-        skipped.push({ type: u.type, path: u.path, selector: chosen.selector, reason: 'dry run' });
+        skipped.push({ type: u.type, path: file.path, selector: chosen.selector, reason: 'dry run' });
         continue;
       }
       try {
+        const before = await readSlotText(page, chosen.index);
         const locator = page.locator(chosen.selector);
-        await locator.setInputFiles(u.path);
-        const verification = await verifyUploadAttached(locator, u.path);
+        await locator.setInputFiles(file.path);
+        let verification = await verifyUploadAttached(locator, file.path);
+        if (verification.verified === false) {
+          // The widget may have read the file and cleared its input; what
+          // the slot SHOWS then decides (see slotShowsFile).
+          const slot = await waitForSlot(page, chosen.index, before, file.path);
+          if (slot.shown) verification = { verified: true, verificationMethod: `upload widget: ${slot.how}` };
+          else if (slot.rejected) verification = { ...verification, verified: false, verificationMethod: 'upload widget: file rejected' };
+        }
         uploaded.push({
-          type: u.type, path: u.path, selector: chosen.selector,
+          type: u.type, path: file.path, selector: chosen.selector,
           matchedBy: chosen.kind === u.type ? 'label' : 'selector-hint', ...verification,
+          ...(file.substituted ? { plannedPath: u.path, formatNote: `sent ${extname(file.path)} because this form does not take ${extname(u.path)}` } : {}),
         });
         if (verification.verified === false) {
           blockers.push(`${u.type}: upload did not remain attached after selection`);

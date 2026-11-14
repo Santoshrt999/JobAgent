@@ -17,7 +17,7 @@ import { candidateNeedsSponsorship } from './exclusionFilter.js';
 import { excludedLocationMatch, postedPay, usdPayPreference } from './searchConstraints.js';
 import { seniorityRank } from '../profile/roleFamilies.js';
 import { matchedTitlePhrases } from './titleMatch.js';
-import { assessEligibility, eligibilityPenalty } from './eligibility.js';
+import { assessEligibility, eligibilityPenalty, requiredText } from './eligibility.js';
 import { FRESHNESS_WINDOW_DAYS } from '../utils/credentialManager.js';
 
 /**
@@ -55,6 +55,17 @@ export const DIRECT_ATS_SOURCES = Object.freeze(new Set([
  * taxonomy's keys. Keeping them here rather than in the taxonomy is deliberate:
  * the taxonomy defines the LADDER, this defines how loosely we read a title.
  */
+/**
+ * Version of the scoring SEMANTICS (not its config), part of the scoring
+ * fingerprint. Bump whenever how a posting is read changes, so stored scores
+ * are recomputed instead of looking current. 2: seniority per profession,
+ * preferred-only skills at partial credit (audit 2026-11-11).
+ */
+export const SCORER_VERSION = 3; // 3: people-manager vs IC track (audit 2026-11-13)
+
+/** Credit for a skill the posting names only as preferred / nice to have. */
+export const PREFERRED_SKILL_CREDIT = 0.3;
+
 const SENIORITY_ALIASES = {
   junior: 'entry', jr: 'entry', graduate: 'entry', 'new grad': 'entry',
   sr: 'senior', intermediate: 'mid', 'mid level': 'mid',
@@ -83,13 +94,38 @@ const SENIORITY_PATTERNS = [
   [/\b(chief|c-level|cxo|ceo|cto|cio|coo)\b|\bvice\s+president\b|\bvp\b/, 'executive'],
   [/\b(director|head\s+of)\b/, 'director'],
   [/\bprincipal\b/, 'principal'],
-  [/\b(lead|staff|manager)\b/, 'lead'],
+  // "Staff" is a level above senior only in engineering-style ladders. A staff
+  // accountant is the entry rung of accounting; reading it as lead scored an
+  // entry-level post as a step UP for a senior. A staff nurse states no level
+  // at all (it is the role at every level), so it matches nothing here.
+  [/\bstaff\s+(?:accountant|auditor|tax|accounting)\b/, 'entry'],
+  [/\bstaff\s+(?:software|data|machine|ml|ai|platform|backend|back-end|frontend|front-end|full[\s-]?stack|infrastructure|security|site|product|research|systems|cloud|devops|mobile|ios|android|engineer|developer|scientist|architect|designer|analytics|technical)\b/, 'lead'],
+  // "Manager" in an individual-contributor title is not a management rung.
+  [/\b(?:account|case|project|product|program|programme|property|community|social\s+media|office|territory|relationship|client\s+success|customer\s+success|care|campaign|content|category|release|delivery|scrum|event|events)\s+manager\b/, 'mid'],
+  [/\b(lead|manager|charge\s+nurse|supervisor)\b/, 'lead'],
   [/\b(senior|sr\.?)\b/, 'senior'],
   [/\bmid[-\s]?level\b/, 'mid'],
   [/\bassociate\b/, 'associate'],
-  [/\b(junior|jr\.?|entry[-\s]level|entry|new\s+grad(?:uate)?)\b/, 'entry'],
+  // "Data entry" is a kind of work, not a level.
+  [/\b(junior|jr\.?|(?<!data\s)entry[-\s]level|(?<!data\s)entry|new\s+grad(?:uate)?)\b/, 'entry'],
   [/\b(intern|internship|co[-\s]?op)\b/, 'intern'],
 ];
+
+/**
+ * A level numeral at the end of a title ("Accountant II", "Clinical Nurse
+ * III", "Software Engineer IV"): I entry, II mid, III senior, IV lead, V
+ * principal. Read only when no level WORD is present, after trailing asides
+ * ("(Remote)", "- R012345") are removed.
+ */
+const LEVEL_NUMERALS = { i: 'entry', ii: 'mid', iii: 'senior', iv: 'lead', v: 'principal' };
+function numeralLevel(title) {
+  const core = String(title ?? '').toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\s[-–—|]\s.*$/, ' ')
+    .trim();
+  const m = /\b(i{1,3}|iv|v)$/.exec(core);
+  return m ? LEVEL_NUMERALS[m[1]] : null;
+}
 
 /**
  * Score a single job.
@@ -146,13 +182,18 @@ export function scoreJob(job = {}, {
   // `scoring.keywords.titles`, so adding a target title changed what was
   // SEARCHED for but not what was SCORED, and the two silently disagreed.
   const categories = resolveCategories(scoring, candidate);
+  // The required part of the posting (title + every clause not marked
+  // preferred). A skill found only outside it earns PREFERRED_SKILL_CREDIT: a
+  // NICU post listing the candidate's adult-ICU skills only under "Preferred"
+  // scored 87 for an adult-ICU nurse, the same as a post requiring them.
+  const required = normalizeText([job.title, requiredText(job.jdText)].join(' \n '));
   for (const category of categories) {
     // Title categories fold morphology and word order ("Engineer, Data",
     // "Data Engineering") — see src/scoring/titleMatch.js. Description
     // categories keep strict phrase matching.
     breakdown[category.id] = category.match === 'title'
       ? keywordCategory(job.title, category.terms, category.weight, category.fullAt, matchedAll, matchedTitlePhrases)
-      : keywordCategory(text, category.terms, category.weight, category.fullAt, matchedAll);
+      : keywordCategory(text, category.terms, category.weight, category.fullAt, matchedAll, matchedPhrases, required);
   }
 
   // Seniority fit.
@@ -199,6 +240,13 @@ export function scoreJob(job = {}, {
   const payFit = scorePay(job, candidate, weights.payFit);
   if (payFit) breakdown.payFit = payFit;
 
+  // Track: people manager vs individual contributor. PENALTY ONLY and outside
+  // the denominator, like pay. Level and track are different questions:
+  // "Principal Data Engineering Manager" is a principal-level rung AND a job
+  // managing people, and it scored 89 for a hands-on senior IC engineer.
+  const trackFit = scoreTrack(job, candidate, weights.trackFit);
+  if (trackFit) breakdown.trackFit = trackFit;
+
   // Eligibility: the posting's stated floor (years, degree, clearance) against
   // the candidate. Also PENALTY ONLY and outside the denominator — an unknown
   // candidate or an unstated floor changes nothing.
@@ -229,7 +277,10 @@ export function scoreJob(job = {}, {
     matchedKeywords,
     missingKeywords,
     sponsorship: sponsorship?.status ?? 'Unconfirmed',
-    eligibility: { verdict: eligibility.verdict, reasons: eligibility.reasons },
+    eligibility: {
+      verdict: eligibility.verdict, reasons: eligibility.reasons,
+      blocking: eligibility.blocking === true, advancedUnknown: eligibility.advancedUnknown === true,
+    },
   };
 }
 
@@ -332,12 +383,26 @@ export function resolveCategories(scoring = {}, candidate = {}) {
   ].filter((c) => c.weight > 0);
 }
 
-/** Points = weight * min(1, matched/fullAt). */
-function keywordCategory(text, keywords = [], weight = 0, fullAt = 1, sink, match = matchedPhrases) {
+/**
+ * Points = weight * min(1, credit/fullAt), where each matched term is worth 1,
+ * or PREFERRED_SKILL_CREDIT when `requiredOnly` is given and the term appears
+ * only outside it (preferred / nice-to-have material).
+ */
+function keywordCategory(text, keywords = [], weight = 0, fullAt = 1, sink, match = matchedPhrases, requiredOnly = null) {
   const matched = match(text, keywords);
   for (const m of matched) sink?.add(m);
-  const coverage = Math.min(1, matched.length / Math.max(1, fullAt));
-  return { points: round2(weight * coverage), weight, matched };
+  let credit = matched.length;
+  let preferredOnly = [];
+  if (requiredOnly !== null && matched.length) {
+    const inRequired = new Set(match(requiredOnly, keywords).map((m) => normalizeText(m)));
+    preferredOnly = matched.filter((m) => !inRequired.has(normalizeText(m)));
+    credit = matched.length - preferredOnly.length + PREFERRED_SKILL_CREDIT * preferredOnly.length;
+  }
+  const coverage = Math.min(1, credit / Math.max(1, fullAt));
+  return {
+    points: round2(weight * coverage), weight, matched,
+    ...(preferredOnly.length ? { preferredOnly } : {}),
+  };
 }
 
 /**
@@ -376,6 +441,10 @@ function scoreSeniority(job, text, candidateSeniority, weight) {
   // raw "Junior Data Engineer" would otherwise detect nothing, fall through to
   // the body, and pick up the VERB "lead" — scoring a junior role as a step up.
   let detected = detectSeniority(String(job?.title ?? '').toLowerCase());
+  if (detected === null) {
+    const numeral = numeralLevel(job?.title);
+    if (numeral) detected = seniorityRank(numeral);
+  }
   // The body is consulted ONLY for an explicit, structured level statement.
   // Running the title patterns over the whole JD read "reports to our CTO" as
   // executive, "partner with the VP" as executive, "the hiring manager" and
@@ -499,6 +568,56 @@ function scoreGeography(job, candidate, weight) {
 
 /** Raw points a posting that pays well under target can lose, by default. */
 const DEFAULT_PAY_PENALTY = 6;
+
+/** Points taken from a people-manager posting for an IC-only search (and a smaller amount the other way). */
+export const DEFAULT_TRACK_PENALTY = 20;
+const REVERSE_TRACK_SHARE = 0.6;
+
+/** "Manager" titles that are individual-contributor roles in their own right. */
+const IC_MANAGER = /\b(?:account|case|project|product|program|programme|property|community|social\s+media|office|territory|relationship|client\s+success|customer\s+success|care|campaign|content|category|release|delivery|scrum|event|events|marketing|brand|partner|vendor|data\s+product|technical\s+product|technical\s+program)\s+manager\b/;
+const PEOPLE_MANAGER = /\b(?:manager|director|head\s+of|vice\s+president|vp|chief|supervisor)\b|\bmanager,/;
+
+/**
+ * Is this title a job managing people? Product, project, account and similar
+ * "manager" titles are IC roles; "lead" is a player-coach and counts as IC.
+ * @param {string} title
+ * @returns {boolean}
+ */
+export function isPeopleManagerTitle(title) {
+  const t = String(title ?? '').toLowerCase();
+  if (!PEOPLE_MANAGER.test(t)) return false;
+  // Remove IC "manager" phrases; a people-manager word may still remain
+  // ("Director, Product Management" keeps "director").
+  const rest = t.replace(new RegExp(IC_MANAGER.source, 'g'), ' ');
+  return PEOPLE_MANAGER.test(rest.replace(/\bproduct\s+management\b/g, 'product'))
+    || /\b(?:director|head\s+of|vice\s+president|vp|chief)\b/.test(rest);
+}
+
+/**
+ * Which tracks the candidate's target titles ask for. Null when there are no
+ * target titles (nothing to compare, so no penalty).
+ * @returns {{ic: boolean, manager: boolean}|null}
+ */
+export function candidateTracks(candidate) {
+  const titles = (candidate?.targetTitles ?? []).map((t) => String(t ?? '').trim()).filter(Boolean);
+  if (!titles.length) return null;
+  const manager = titles.filter(isPeopleManagerTitle).length;
+  return { ic: manager < titles.length, manager: manager > 0 };
+}
+
+function scoreTrack(job, candidate, weight) {
+  const wants = candidateTracks(candidate);
+  if (!wants) return null;
+  const max = Number.isFinite(Number(weight)) && Number(weight) >= 0 ? Number(weight) : DEFAULT_TRACK_PENALTY;
+  const managesPeople = isPeopleManagerTitle(job?.title);
+  if (managesPeople && !wants.manager) {
+    return { points: -round2(max), weight: 0, matched: ['people-manager role; your search targets individual-contributor roles'] };
+  }
+  if (!managesPeople && !wants.ic) {
+    return { points: -round2(max * REVERSE_TRACK_SHARE), weight: 0, matched: ['individual-contributor role; your search targets people-manager roles'] };
+  }
+  return null;
+}
 
 /**
  * Pay versus the candidate's stated preference.

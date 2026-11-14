@@ -147,6 +147,26 @@ describe('ingestUrl (add a job by URL)', () => {
     await expect(ingestUrl({ config, db, url: 'not a url' })).rejects.toThrow(/valid public job URL/);
   });
 
+  it('refuses a public-looking name that resolves to this machine, without sending a request (P0-2)', async () => {
+    const { createServer } = await import('node:http');
+    let hits = 0;
+    const server = createServer((_req, res) => { hits += 1; res.end('<h1>secret local page</h1>'); });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+    // A DNS answer like localtest.me's: a public-looking name that points at 127.0.0.1.
+    const lookupImpl = (_host, _options, callback) => callback(null, [{ address: '127.0.0.1', family: 4 }]);
+    try {
+      const err = await ingestUrl({ config, db, url: `http://jobs.rebind-example.com:${port}/posting`, deps: { lookupImpl } })
+        .then(() => null, (e) => e);
+      expect(err).toBeTruthy();
+      expect(err.statusCode).toBe(400);
+      expect(err.message).toMatch(/private or local network address/);
+      expect(hits).toBe(0);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it('E2 — grades freshness with the same model as discovery, not the legacy 7/14-day curve', async () => {
     const desc = 'Senior Data Engineer building Azure Databricks lakehouses with PySpark, Delta Lake and SQL.';
     const fetchImpl = async () => ({ ok: true, status: 200, text: async () => jdHtml('Senior Data Engineer', desc) });
@@ -234,6 +254,24 @@ describe('runAssist', () => {
     expect(r.counters.jobs_assisted).toBe(1);
     expect(r.results[0].submitted).toBe(false);
     expect(r.results[0].status).toBe(LIFECYCLE.READY_FOR_SUBMIT);
+  });
+
+  it('never passes autoSubmit to the filler, even when a caller asks for it (P2-8)', async () => {
+    const packet = { job: { id: 'cli-x', url: 'https://x/apply' }, score: 90, blockers: [] };
+    const approval = enqueueForApproval(db, { packet, packetPath: writePacketFile(dir, 'cli-x', packet) });
+    approvePacket(db, approval.id);
+    const seen = [];
+    const assistFn = async ({ packet: p, options }) => {
+      seen.push(options);
+      return { jobId: p.job.id, status: LIFECYCLE.READY_FOR_SUBMIT, submitted: false, blockers: [] };
+    };
+    await runAssist({
+      config: { runtime: {}, scoring: {} }, db, logger: null,
+      options: { autoSubmit: true, headless: true }, deps: { assistFn },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].autoSubmit).toBe(false);
+    expect(seen[0].headless).toBe(true); // other options still pass through
   });
 
   it('does NOT re-apply to a job already marked applied (idempotency guard)', async () => {

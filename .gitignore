@@ -134,3 +134,7 @@ skills-lock.json
 
 # Browser-automation session logs (Playwright MCP)
 .playwright-mcp/
+
+# One-file exports (npm run export) hold personal data.
+exports/
+*.jobagent

@@ -70,7 +70,14 @@ export function prettyResult(result) {
   // "not finding new jobs" while it was in fact working.
   if (result.phase === 'discover') {
     const isNew = Number(counters.jobs_new ?? 0);
-    return `${fmt(isNew)} new · ${fmt(counters.jobs_found)} seen · scored ${fmt(counters.jobs_scored)}`;
+    const seen = Number(counters.jobs_found ?? 0);
+    // When every posting seen was new (a first run, or a fresh database) the
+    // two figures are identical, and "52,474 new · 52,474 seen" read as a
+    // duplicated stat. Say it once.
+    const head = seen > 0 && seen === isNew
+      ? `${fmt(isNew)} new (all of them)`
+      : `${fmt(isNew)} new · ${fmt(seen)} seen`;
+    return `${head} · scored ${fmt(counters.jobs_scored)}`;
   }
   if (result.phase === 'score') return `Re-scored ${fmt(counters.jobs_rescored ?? counters.jobs_scored)}`;
   return `${result.phase ?? 'run'} done`;
@@ -306,6 +313,8 @@ export async function pollRun() {
   }
   if (gen !== pollGen) return;
   applyRunGate(status);
+  // While a run is going, lastResult is still the PREVIOUS run's.
+  if (!status.running) recordPrepareOutcome(status.lastResult);
   const finished = !status.running && wasRunning;
   if (wasDown || finished) refreshAll({ force: true });
   // An auto-fill run is what adds questions to the profile's queue.
@@ -313,6 +322,20 @@ export async function pollRun() {
   wasRunning = status.running;
   const delay = document.hidden ? HIDDEN_POLL_MS : status.running ? 1500 : 5000;
   pollTimer = setTimeout(pollRun, delay);
+}
+
+/**
+ * Remember which jobs a Prepare run could not prepare, and why.
+ *
+ * The run summary said only "Prepared 0 packet(s)": the reason (a refused
+ * profile, another person's resume, a closed posting) was in the server log,
+ * so a failed Prepare looked like nothing happened. Kept per job until a later
+ * Prepare of that job succeeds, and shown in its Tailored resume box.
+ */
+export function recordPrepareOutcome(result) {
+  if (result?.phase !== 'prepare-selected') return;
+  for (const { jobId } of result.prepared ?? []) state.prepareFailures.delete(jobId);
+  for (const { jobId, error } of result.failed ?? []) state.prepareFailures.set(jobId, String(error ?? 'unknown error'));
 }
 
 export let lastFullRefreshAt = Date.now();

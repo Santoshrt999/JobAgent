@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { writeFileAtomic } from '../utils/fsSafe.js';
+import { workspacePaths } from '../profile/workspace.js';
 import { normalizeText, slugify } from '../utils/textNormalize.js';
 import { STOPWORDS } from './screeningQA.js';
 
@@ -60,9 +61,16 @@ const QUESTION_WORDS = new Set([
   'specify', 'choose', 'confirm', 'list', 'describe',
 ]);
 
-/** @returns {string} absolute path of the queue file for a project root */
+/**
+ * The ACTIVE PERSON's queue file. Each workspace owns one: a shared file showed
+ * one candidate's unanswered employer questions (companies, job links) in the
+ * next candidate's Application profile. The original workspace keeps the
+ * original path, data/question_queue.json.
+ *
+ * @returns {string} absolute path of the queue file for a project root
+ */
 export function questionQueuePath(root) {
-  return join(root, 'data', 'question_queue.json');
+  return join(workspacePaths(root).dataDir, 'question_queue.json');
 }
 
 /**
@@ -85,6 +93,71 @@ export function questionKey(label) {
 function cleanLabel(label) {
   return String(label ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL_CHARS);
 }
+
+/**
+ * WHAT KIND OF QUESTION THIS IS (audit follow-up, 2026-11-13).
+ *
+ * Three kinds of entry reached the queue that must never be offered as "answer
+ * once, used on every application":
+ *
+ *  - NOISE. Labels that are not questions at all: a control's placeholder
+ *    ("Search", "Select..."), its role ("textbox"), site chrome ("Display
+ *    language"), or a generated field id ("z0v_CCXsxi"). Older fills recorded
+ *    them before the label fixes; they are hidden, never counted, never
+ *    recorded again.
+ *  - EMPLOYER. The true answer depends on the employer or the posting: "Have
+ *    you ever been employed by this company?", "Were you referred by a current
+ *    employee?", "Why are you a good fit for this role?", or one that names the
+ *    employer. A saved "No" would be typed onto EVERY employer's form,
+ *    including one the person did work for — an untrue statement on an
+ *    application. They are shown, but answered on each form, never saved.
+ *  - VOLUNTARY. Self-identification (gender, race, veteran, disability):
+ *    optional everywhere, grouped and labelled so.
+ *
+ * Everything else is GENERAL: answer it once.
+ *
+ * @param {unknown} label the question as the form wrote it
+ * @param {{companies?: string[]}} [context] employers whose forms asked it
+ * @returns {'noise'|'employer'|'voluntary'|'general'}
+ */
+export function questionKind(label, { companies = [] } = {}) {
+  const text = cleanLabel(label);
+  const lower = text.toLowerCase();
+  if (!/[a-z]{2}/i.test(text) || text.length < 3) return 'noise';
+  if (NOISE_LABELS.has(lower.replace(/[.…:*\s]+$/, ''))) return 'noise';
+  // A generated id: one token with digits or underscores, nothing a person reads.
+  if (!/\s/.test(text) && text.length >= 6 && /[\d_]/.test(text)) return 'noise';
+
+  if (EMPLOYER_RE.test(lower)) return 'employer';
+  if (THIS_JOB_RE.test(lower) && JOB_CONDITION_RE.test(lower)) return 'employer';
+  for (const company of companies) {
+    const name = String(company ?? '').toLowerCase().split(/[^a-z0-9]+/).find((w) => w.length >= 4 && !GENERIC_COMPANY_WORDS.has(w));
+    if (name && new RegExp(`\\b${name}\\b`).test(lower)) return 'employer';
+  }
+  if (VOLUNTARY_RE.test(lower)) return 'voluntary';
+  return 'general';
+}
+
+const NOISE_LABELS = new Set([
+  'search', 'select', 'select one', 'select an option', 'please select', 'choose', 'choose one',
+  'textbox', 'text box', 'combobox', 'listbox', 'input', 'field', 'dropdown', 'type here', 'enter',
+  'display language', 'language', 'answer', 'your answer', 'start typing', '--',
+]);
+const EMPLOYER_RE = new RegExp([
+  String.raw`\b(employed|worked) (by|for|at|with) (this|our|the) (company|organi[sz]ation|employer|firm)`,
+  String.raw`\bever (been )?(employed|worked) (by|for|at) (us|this)`,
+  String.raw`\breferr(ed|al)\b`,
+  String.raw`\bcurrent(ly)? .{0,40}\bemployees?\b`,
+  String.raw`\bwhy (do|are|would|should) (you|we)\b.{0,60}\b(fit|interest|want|apply|join|hire|choose)`,
+  String.raw`\bwhy (this|our) (company|role|position|team)`,
+  String.raw`\b(know|related to) (anyone|someone) (who works|at|employed)`,
+].join('|'));
+const THIS_JOB_RE = /\bthis (role|position|job|opportunity)\b/;
+// Relocation is NOT here: willingness to relocate is the person's own
+// preference (the profile states it), so it stays answer-once.
+const JOB_CONDITION_RE = /\b(onsite|on-site|on site|in[- ]office|office each day|commute|travel|schedule|shift|hybrid)\b/;
+const VOLUNTARY_RE = /\b(gender|race|racial|ethnicity|hispanic|latin[oax]|veteran|disabilit(y|ies)|pronouns?|sexual orientation|transgender)\b/;
+const GENERIC_COMPANY_WORDS = new Set(['services', 'service', 'group', 'holdings', 'company', 'corporation', 'insurance', 'technologies', 'solutions', 'systems', 'international', 'global']);
 
 /**
  * Suggest `patterns` for a new screening-answer entry.
@@ -242,6 +315,7 @@ export function recordUnansweredQuestions(root, {
     const label = cleanLabel(raw?.label ?? raw);
     const key = questionKey(label);
     if (!key) continue;
+    if (questionKind(label) === 'noise') continue; // not a question: never queued
 
     const sighting = { jobId, company, title, url, ats, at };
     let entry = byKey.get(key);
@@ -359,8 +433,11 @@ export function summarizeQuestionQueue(root) {
   const queue = loadQuestionQueue(root);
   if (queue.error) return { open: [], resolved: [], openCount: 0, requiredCount: 0, error: queue.error };
 
+  const kindOf = (q) => questionKind(q.label, { companies: (q.jobs ?? []).map((j) => j.company) });
   const open = queue.questions
     .filter((q) => q.status === 'open')
+    .map((q) => ({ ...q, kind: kindOf(q) }))
+    .filter((q) => q.kind !== 'noise')
     .sort((a, b) => Number(b.required === true) - Number(a.required === true)
       || Number(b.seenCount ?? 0) - Number(a.seenCount ?? 0)
       || String(b.lastSeenAt ?? '').localeCompare(String(a.lastSeenAt ?? '')));
@@ -368,10 +445,14 @@ export function summarizeQuestionQueue(root) {
     .filter((q) => q.status !== 'open')
     .sort((a, b) => String(b.lastSeenAt ?? '').localeCompare(String(a.lastSeenAt ?? '')));
 
+  // Counts cover what the person can answer ONCE; employer-specific
+  // questions are answered on each form and counted apart.
+  const answerable = open.filter((q) => q.kind !== 'employer');
   return {
     open,
     resolved,
-    openCount: open.length,
-    requiredCount: open.filter((q) => q.required === true).length,
+    openCount: answerable.length,
+    requiredCount: answerable.filter((q) => q.required === true).length,
+    employerCount: open.length - answerable.length,
   };
 }

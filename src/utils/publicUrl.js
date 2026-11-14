@@ -9,8 +9,9 @@
  *
  * Pure, dependency-free, and deliberately conservative: it blocks by literal
  * address shape. It cannot stop a public hostname that RESOLVES to a private
- * address (that needs resolution-time checking), so it is a first line of
- * defense, not a complete SSRF fix — see assertPublicHttpUrl's notes.
+ * address, so it is the first line of defense and the source of user-facing
+ * messages. The complete check is src/utils/safeFetch.js, which refuses a
+ * private address at connect time, on every redirect hop.
  */
 
 /** Hostnames that mean "this machine". */

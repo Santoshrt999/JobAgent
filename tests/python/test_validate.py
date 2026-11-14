@@ -77,3 +77,86 @@ def test_low_keyword_coverage_is_a_warning(tmp_path):
     assert result["ok"] is True
     assert result["keyword_coverage"]["ratio"] < 0.4
     assert any("keyword coverage" in w for w in result["warnings"])
+
+
+# Measured 2026-11-13: a resume whose email and phone sit only in the Word page
+# header was refused with "resume has no contact details", because the check read
+# the body alone. Headers, footers and text boxes are where a resume puts them.
+def _body_without_contact():
+    return [p for p in _good_paragraphs() if "@" not in p]
+
+
+def _text_box_xml(text):
+    return (
+        '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:pict><w:txbxContent><w:p><w:r><w:t>' + text + '</w:t></w:r></w:p></w:txbxContent></w:pict></w:r>'
+    )
+
+
+def _save_with(tmp_path, place):
+    doc = Document()
+    for p in _body_without_contact():
+        doc.add_paragraph(p)
+    place(doc)
+    path = tmp_path / "resume.docx"
+    doc.save(str(path))
+    return path
+
+
+def test_contact_in_page_header_counts(tmp_path):
+    path = _save_with(tmp_path, lambda d: d.sections[0].header.paragraphs[0].add_run("priya@example.com | 555-123-4567"))
+    result = validate_resume(path)
+    assert result["has_email"] is True
+    assert result["has_phone"] is True
+    assert not any("contact" in i for i in result["issues"])
+    assert result["ok"] is True
+
+
+def test_contact_in_page_footer_counts(tmp_path):
+    path = _save_with(tmp_path, lambda d: d.sections[0].footer.paragraphs[0].add_run("priya@example.com"))
+    result = validate_resume(path)
+    assert result["has_email"] is True
+    assert result["ok"] is True
+
+
+def test_contact_in_a_text_box_counts(tmp_path):
+    from lxml import etree
+
+    def place(doc):
+        doc.sections[0].header.paragraphs[0]._p.append(etree.fromstring(_text_box_xml("priya@example.com")))
+
+    result = validate_resume(_save_with(tmp_path, place))
+    assert result["has_email"] is True
+    assert result["ok"] is True
+
+
+def test_contact_in_a_later_sections_header_counts(tmp_path):
+    from docx.enum.section import WD_SECTION
+
+    def place(doc):
+        doc.add_section(WD_SECTION.NEW_PAGE)
+        second = doc.sections[1]
+        second.header.is_linked_to_previous = False
+        second.header.paragraphs[0].add_run("555-123-4567")
+
+    result = validate_resume(_save_with(tmp_path, place))
+    assert result["has_phone"] is True
+    assert result["ok"] is True
+
+
+def test_no_contact_anywhere_is_still_a_hard_issue(tmp_path):
+    # The guard stays: header and footer exist but hold no email or phone.
+    def place(doc):
+        doc.sections[0].header.paragraphs[0].add_run("Priya Raghunathan")
+        doc.sections[0].footer.paragraphs[0].add_run("Page 1")
+
+    result = validate_resume(_save_with(tmp_path, place))
+    assert result["ok"] is False
+    assert any("no contact details" in i for i in result["issues"])
+
+
+def test_header_text_does_not_change_the_word_count_or_sections(tmp_path):
+    plain = validate_resume(_save_with(tmp_path, lambda d: None))
+    headed = validate_resume(_save_with(tmp_path, lambda d: d.sections[0].header.paragraphs[0].add_run("priya@example.com")))
+    assert headed["word_count"] == plain["word_count"]
+    assert headed["sections"] == plain["sections"]

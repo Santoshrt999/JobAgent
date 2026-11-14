@@ -124,12 +124,28 @@ const ALWAYS_REACHABLE = Object.freeze([LIFECYCLE.FAILED]);
 const HUMAN_REACHABLE = Object.freeze([LIFECYCLE.SUBMITTED, LIFECYCLE.SUBMIT_UNVERIFIED]);
 
 /**
+ * Outcomes the browser-assist run reports, reachable from any state except a
+ * terminal one. A run can start from a prepared, approved, blocked, cancelled
+ * or failed job, and what it finds on the live form decides where it ends;
+ * listing every pair in TRANSITIONS would only restate this rule. Recording
+ * them through setJobStatus is what gives each one an audit event.
+ */
+const ASSIST_REACHABLE = Object.freeze([
+  LIFECYCLE.ASSIST_STARTED, LIFECYCLE.READY_FOR_SUBMIT, LIFECYCLE.ASSIST_BLOCKED,
+  LIFECYCLE.SUBMIT_UNVERIFIED, LIFECYCLE.CANCELLED, LIFECYCLE.SUBMITTED,
+]);
+const ASSIST_NEVER_FROM = Object.freeze([LIFECYCLE.SUBMITTED, LIFECYCLE.HARD_DISCARDED]);
+
+/** Where a human may send an unverified submission they say did not land. */
+const HUMAN_UNSUBMIT = Object.freeze([LIFECYCLE.ASSIST_BLOCKED, LIFECYCLE.READY_FOR_SUBMIT]);
+
+/**
  * May `from` legally become `to`?
  *
  * @param {string|null} from current jobs.status (null for a brand-new row)
  * @param {string} to proposed next status
  * @param {object} [options]
- * @param {'system'|'human'} [options.actor='system'] who is making the move
+ * @param {'system'|'human'|'assist'} [options.actor='system'] who is making the move
  * @returns {boolean}
  */
 export function canTransition(from, to, { actor = 'system' } = {}) {
@@ -138,6 +154,11 @@ export function canTransition(from, to, { actor = 'system' } = {}) {
   if (from === to) return true;                 // idempotent re-write
   if (ALWAYS_REACHABLE.includes(to)) return true;
   if (actor === 'human' && HUMAN_REACHABLE.includes(to) && from !== LIFECYCLE.SUBMITTED) return true;
+  if (actor === 'assist' && ASSIST_REACHABLE.includes(to) && !ASSIST_NEVER_FROM.includes(from)) return true;
+  // "No, it didn't go through": only the person can take an unverified
+  // submission back to finishing it — never the pipeline (a retry from an
+  // unconfirmed submit is how a double application happens).
+  if (actor === 'human' && from === LIFECYCLE.SUBMIT_UNVERIFIED && HUMAN_UNSUBMIT.includes(to)) return true;
   return (TRANSITIONS[from] ?? []).includes(to);
 }
 

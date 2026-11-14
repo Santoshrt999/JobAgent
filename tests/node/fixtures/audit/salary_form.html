@@ -1,0 +1,6 @@
+<!doctype html><html><head><title>Apply</title></head><body><h1>Application</h1>
+<form onsubmit="return false">
+<label for="email">Email</label><input id="email" name="email" type="email" required>
+<label for="sal">Desired salary</label><input id="sal" name="sal" type="text" required>
+<button id="submit_app" type="button" onclick="sessionStorage.setItem('sal',document.getElementById('sal').value);location.href='salary_thanks.html'">Submit application</button>
+</form></body></html>

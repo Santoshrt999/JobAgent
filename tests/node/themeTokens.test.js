@@ -50,9 +50,11 @@ describe('light theme palette', () => {
   });
 
   it('still carries the contrast-critical text tokens', () => {
-    // Raised from #7d8899 (3.59:1 on white) after measuring it as an AA failure.
-    expect(explicit['--text-faint']).toBe('#68717f');
-    expect(system['--text-faint']).toBe('#68717f');
+    // Raised from #7d8899 (3.59:1 on white) after measuring it as an AA failure,
+    // then from #68717f (4.43:1 on --surface-2, found by the axe suite) to a
+    // value that is AA on every light surface.
+    expect(explicit['--text-faint']).toBe('#5f6875');
+    expect(system['--text-faint']).toBe('#5f6875');
   });
 });
 

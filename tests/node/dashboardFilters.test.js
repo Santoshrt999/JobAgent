@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
-  POSTED_WINDOWS, boardPage, dashboardStats, BOARD_VIEWS, OPEN_ONLY_VIEWS,
+  POSTED_WINDOWS, boardPage, dashboardStats, BOARD_VIEWS, OPEN_ONLY_VIEWS, CLOSED_ROW_VIEWS,
 } from '../../src/dashboard/data.js';
 
 const HOUR = 3600_000;
@@ -279,7 +279,17 @@ describe('OPEN_ONLY_VIEWS is honest about which views hide closed rows', () => {
     // OPEN_ONLY_VIEWS (not just left out of the loop above) — this keeps the two
     // lists from drifting apart unnoticed.
     for (const key of Object.keys(BOARD_VIEWS)) {
-      expect(OPEN_ONLY_VIEWS.has(key), `view "${key}" is not classified in OPEN_ONLY_VIEWS`).toBe(true);
+      expect(OPEN_ONLY_VIEWS.has(key) !== CLOSED_ROW_VIEWS.has(key),
+        `view "${key}" must be in exactly one of OPEN_ONLY_VIEWS and CLOSED_ROW_VIEWS`).toBe(true);
+    }
+  });
+
+  it('a closed-row view shows only its own closed status', () => {
+    expect([...CLOSED_ROW_VIEWS]).toEqual(['archived']);
+    const pred = BOARD_VIEWS.archived;
+    expect(pred({ appStatus: 'archived' })).toBe(true);
+    for (const appStatus of ['rejected', 'discarded', 'scored', 'shortlisted', 'submitted']) {
+      expect(pred({ appStatus }), appStatus).toBe(false);
     }
   });
 });

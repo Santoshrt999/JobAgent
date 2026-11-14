@@ -53,6 +53,32 @@ export function closeDialog(dialog) {
   if (dialog?.open) dialog.close();
 }
 
+/**
+ * Dialogs that hold a form, each with a way to ask "is there typed text that
+ * is not saved?". A click outside, Esc and the Close buttons all dismiss a
+ * dialog, and each used to throw away whatever had been typed.
+ */
+const guards = new WeakMap();
+
+export function guardDialog(dialog, isDirty) {
+  if (dialog) guards.set(dialog, isDirty);
+}
+
+const hasUnsavedChanges = (dialog) => Boolean(guards.get(dialog)?.());
+
+/**
+ * Close because the PERSON asked to (Close, ×, Cancel, Esc). With unsaved text
+ * that is a question, not an action. Programmatic closes after a successful
+ * save keep using `closeDialog`, which never asks.
+ */
+export function requestClose(dialog) {
+  if (!dialog?.open) return;
+  if (!hasUnsavedChanges(dialog)) { dialog.close(); return; }
+  confirmAction('What you typed in this window has not been saved.', () => closeDialog(dialog), {
+    title: 'Discard unsaved changes?', confirmLabel: 'Discard changes', cancelLabel: 'Keep editing',
+  });
+}
+
 document.addEventListener('close', (event) => {
   const dialog = event.target;
   if (dialog.tagName !== 'DIALOG') return;
@@ -67,10 +93,17 @@ document.addEventListener('close', (event) => {
   if (back?.isConnected) back.focus?.();
 }, true);
 
-// Clicking the backdrop (outside the panel) closes the dialog.
 for (const dialog of document.querySelectorAll('dialog')) {
+  // Clicking the backdrop (outside the panel) closes the dialog — unless
+  // something typed in it would be lost: an accidental click must not do that.
   dialog.addEventListener('click', (event) => {
-    if (event.target === dialog) dialog.close();
+    if (event.target === dialog && !hasUnsavedChanges(dialog)) dialog.close();
+  });
+  // Esc is the browser's own close request; with unsaved text, ask instead.
+  dialog.addEventListener('cancel', (event) => {
+    if (!hasUnsavedChanges(dialog)) return;
+    event.preventDefault();
+    requestClose(dialog);
   });
 }
 
@@ -82,9 +115,10 @@ export let pendingConfirm = null;
  * ("Delete" says what it does; "Continue" does not), and a second choice
  * beside it (`altLabel` / `onAlt`) for questions with two real answers.
  */
-export function confirmAction(message, onConfirm, { title = 'Confirm', confirmLabel = 'Continue', altLabel = '', onAlt = null } = {}) {
+export function confirmAction(message, onConfirm, { title = 'Confirm', confirmLabel = 'Continue', cancelLabel = 'Cancel', altLabel = '', onAlt = null } = {}) {
   $('dlgConfirmTitle').textContent = title;
   $('confirmGo').textContent = confirmLabel;
+  $('confirmCancel').textContent = cancelLabel;
   $('confirmAlt')?.remove();
   pendingAlt = null;
   if (altLabel && onAlt) {

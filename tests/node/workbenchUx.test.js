@@ -20,7 +20,11 @@ describe('the detail rail survives refreshes (U1)', () => {
     expect(app).toContain('reconcileDetail(current, sections)');
     // Never moves a kept node: detaching blurs whatever it holds.
     expect(app).toContain('if (prev && keepSection(prev, key)) placed = prev;');
-    expect(app).toContain("return node.contains(document.activeElement) || (key === 'notes' && note.isDirty());");
+    // Kept while you are typing, choosing or inside an open menu; a button
+    // that only holds focus after a press does not freeze its section.
+    expect(app).toContain("if (key === 'notes' && note.isDirty()) return true;");
+    expect(app).toContain(`return active.matches('input, textarea, select, [contenteditable=""], [contenteditable="true"]')`);
+    expect(app).toContain("|| Boolean(active.closest('details[open]'));");
     expect(app).toContain('function carryOpenDetails');
     expect(app).toContain("el('details', { 'data-key': 'technical' })");
     // The link-check result is state, not DOM, so a redraw keeps it.
@@ -155,8 +159,9 @@ describe('Today is the landing view (U7)', () => {
     for (const kind of ['prepare', 'approve', 'autofill', 'answer', 'submit', 'fix_setup']) {
       expect(act).toContain(`case '${kind}'`);
     }
-    // review (and anything unknown) opens the job in the rail.
-    expect(act).toContain('default: await selectJob(id, { user: true });');
+    // review (and anything unknown) opens the job in the rail AT the part the
+    // button names — reselecting an already-open job changed nothing on screen.
+    expect(act).toContain('default: await revealInDetail(id);');
   });
 
   it('shows system notices with a copyable fix, and gates Auto-fill on a missing browser', () => {

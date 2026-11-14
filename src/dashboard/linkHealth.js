@@ -3,6 +3,7 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
 import { isPublicHttpUrl } from '../utils/publicUrl.js';
+import { safeFetch } from '../utils/safeFetch.js';
 import { checkPostingLiveness } from '../search/postingLiveness.js';
 
 const AGGREGATORS = /(^|\.)(linkedin|indeed|glassdoor|dice|ziprecruiter|simplyhired|monster)\./i;
@@ -72,7 +73,7 @@ const ATS_NAMES = {
   oracle: 'Oracle Recruiting', ashby: 'Ashby',
 };
 
-export async function checkJobLink(value, { fetchImpl = fetch, timeoutMs = 12000, lookupImpl, job = null, livenessImpl } = {}) {
+export async function checkJobLink(value, { fetchImpl = safeFetch, timeoutMs = 12000, lookupImpl, job = null, livenessImpl } = {}) {
   const classified = classifyJobUrl(value);
   if (classified.kind === 'invalid') {
     return { ...classified, status: 'invalid', httpStatus: null, finalUrl: null, message: 'This is not a valid HTTP(S) job URL.' };
@@ -97,9 +98,10 @@ export async function checkJobLink(value, { fetchImpl = fetch, timeoutMs = 12000
         message: `The employer has closed this posting — ${name} no longer lists it.` };
     }
   }
-  // Real DNS whenever the real fetch is used; an injected fetch (tests) may
-  // inject its own resolver too.
-  const resolver = lookupImpl ?? (fetchImpl === fetch ? dnsLookup : null);
+  // Real DNS whenever a real fetch is used; an injected fetch (tests) may
+  // inject its own resolver too. The default safeFetch also checks the address
+  // it connects to, so this pre-check only gives a clearer message.
+  const resolver = lookupImpl ?? ((fetchImpl === safeFetch || fetchImpl === fetch) ? dnsLookup : null);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -153,6 +155,10 @@ export async function checkJobLink(value, { fetchImpl = fetch, timeoutMs = 12000
     return { kind: finalKind, status: 'error', httpStatus, finalUrl,
       message: `The posting returned HTTP ${httpStatus ?? 'error'}.` };
   } catch (err) {
+    if (err?.code === 'BLOCKED_URL') {
+      return { ...classified, status: 'blocked', httpStatus: null, finalUrl: String(value),
+        message: `The link check refused to follow this address: ${err.message}.` };
+    }
     const timedOut = err?.name === 'AbortError';
     return { ...classified, status: timedOut ? 'timeout' : 'unreachable', httpStatus: null,
       finalUrl: String(value), message: timedOut ? 'The link check timed out.' : `The posting could not be reached: ${err.message}` };

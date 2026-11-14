@@ -22,6 +22,7 @@
 import { buildPrefillPlan } from '../apply/formPrefill.js';
 import {
   contradictingSponsorshipClaim, isInvertedSponsorshipQuestion, isSponsorshipTopic, candidateRequiresSponsorship,
+  mapToChoice,
 } from '../apply/screeningQA.js';
 import { wholeWordIn } from '../utils/textNormalize.js';
 
@@ -71,8 +72,19 @@ async function safeCount(page, selector) {
   try { return await page.locator(selector).count(); } catch { return 0; }
 }
 
-/** Selectors that commonly hold the rendered options of a typeahead/combobox. */
-const OPTION_SELECTORS = ['[role="option"]', '.select__option', 'li[role="option"]', '[class*="option"]'];
+/**
+ * Selectors that hold the rendered options of a typeahead/combobox.
+ *
+ * SCOPED is used inside the popup the input says it owns (aria-controls /
+ * aria-owns), where any list item is one of ITS options. PAGE_WIDE is used
+ * when the input names no popup, and is restricted to nodes that declare
+ * themselves options. It used to include `[class*="option"]` page-wide, and on
+ * a form whose yes/no questions were buttons with an "_option_" class, typing
+ * a city into "Location" with no list open clicked the "Yes" of a sponsorship
+ * question further down the page.
+ */
+const SCOPED_OPTION_SELECTORS = ['[role="option"]', '.select__option', 'li', '[class*="option"]'];
+const PAGE_WIDE_OPTION_SELECTORS = ['[role="listbox"] [role="option"]', '.select__menu .select__option', '[role="option"]'];
 
 /**
  * Longest typed value we trust a typeahead to have filtered for us. A short
@@ -97,18 +109,15 @@ async function pickComboboxOption(page, field, value) {
   // Never "trust the top result" for a legal/immigration/demographic question;
   // see SENSITIVE_CHOICE_LABEL.
   const sensitive = isSensitiveChoiceLabel(field.label);
-  const allowTopMatch = !sensitive && want.length > 0 && want.length <= MAX_COMBOBOX_AUTOPICK;
   const scope = field.listboxSelector ? `${field.listboxSelector} ` : '';
+  // "Whatever the typeahead put on top" is trusted only inside the popup this
+  // input owns, where the site itself filtered the list by what we typed.
+  const allowTopMatch = Boolean(scope) && !sensitive && want.length > 0 && want.length <= MAX_COMBOBOX_AUTOPICK;
+  const selectors = scope ? SCOPED_OPTION_SELECTORS : PAGE_WIDE_OPTION_SELECTORS;
 
-  // Async typeaheads (Greenhouse's location field) render results a beat after
-  // the keystrokes. Give them a moment before deciding nothing appeared.
-  if (typeof page.waitForSelector === 'function') {
-    const anyOption = OPTION_SELECTORS.map((base) => `${scope}${base}`).join(', ');
-    try { await page.waitForSelector(anyOption, { state: 'attached', timeout: OPTION_WAIT_MS }); }
-    catch { /* none rendered — handled below */ }
-  }
+  await waitForOptions(page, scope, selectors);
 
-  for (const base of OPTION_SELECTORS) {
+  for (const base of selectors) {
     const sel = `${scope}${base}`;
     let count;
     try { count = await page.locator(sel).count(); } catch { count = 0; }
@@ -142,6 +151,194 @@ async function pickComboboxOption(page, field, value) {
   // datalist or a typeahead that had not rendered yet would SUBMIT the
   // application, bypassing every approval gate on the real submit path.
   return { ok: false, action: 'combobox', error: 'no matching option appeared' };
+}
+
+/**
+ * Async typeaheads (Greenhouse's location field) render results a beat after
+ * the keystrokes. Give them a moment before deciding nothing appeared.
+ */
+async function waitForOptions(page, scope, selectors) {
+  if (typeof page.waitForSelector !== 'function') return;
+  const anyOption = selectors.map((base) => `${scope}${base}`).join(', ');
+  try { await page.waitForSelector(anyOption, { state: 'attached', timeout: OPTION_WAIT_MS }); }
+  catch { /* none rendered — handled by the caller */ }
+}
+
+/**
+ * The options a combobox offers once opened: the selector that found them and
+ * their texts (index-aligned with that selector's matches), or texts [] when
+ * it shows none or the page cannot be read. Same scoping rules as
+ * pickComboboxOption.
+ */
+async function comboboxOptions(page, field) {
+  const scope = field.listboxSelector ? `${field.listboxSelector} ` : '';
+  const selectors = scope ? SCOPED_OPTION_SELECTORS : PAGE_WIDE_OPTION_SELECTORS;
+  await waitForOptions(page, scope, selectors);
+  for (const base of selectors) {
+    try {
+      const sel = `${scope}${base}`;
+      const loc = page.locator(sel);
+      if (!(await loc.count())) continue;
+      const texts = (await loc.allTextContents()).map((t) => String(t ?? '').replace(/\s+/g, ' ').trim());
+      if (texts.some(Boolean)) return { selector: sel, texts };
+    } catch { /* try the next shape */ }
+  }
+  return { selector: null, texts: [] };
+}
+
+async function comboboxOptionTexts(page, field) {
+  return (await comboboxOptions(page, field)).texts.filter(Boolean);
+}
+
+/**
+ * The popup a combobox controls RIGHT NOW (`#id`), or null.
+ *
+ * Read live, after opening: Rippling sets aria-controls only while its list
+ * is open, so the value seen by the scanner was always empty and every option
+ * lookup fell back to page-wide selectors.
+ */
+async function liveListboxSelector(locator) {
+  if (!locator || typeof locator.evaluate !== 'function') return null;
+  try {
+    return await locator.evaluate((el) => {
+      const id = (el.getAttribute('aria-controls') || el.getAttribute('aria-owns') || '').trim().split(/\s+/)[0];
+      if (!id || !document.getElementById(id)) return null;
+      return `#${window.CSS && CSS.escape ? CSS.escape(id) : id}`;
+    }).then((sel) => (typeof sel === 'string' && sel.startsWith('#') ? sel : null));
+  } catch {
+    return null;
+  }
+}
+
+/** Dropdown choices already read, per page and URL (see fillScannedFields). */
+const CHOICE_CACHE = new WeakMap();
+function choiceCacheFor(page) {
+  if (!page || (typeof page !== 'object' && typeof page !== 'function')) return new Map();
+  let url = '';
+  try { url = typeof page.url === 'function' ? String(page.url()) : ''; } catch { /* no url on a fake */ }
+  let entry = CHOICE_CACHE.get(page);
+  if (!entry || entry.url !== url) { entry = { url, map: new Map() }; CHOICE_CACHE.set(page, entry); }
+  return entry.map;
+}
+
+async function isExpanded(locator) {
+  try { return (await locator.getAttribute?.('aria-expanded')) === 'true'; } catch { return false; }
+}
+
+/**
+ * Close an open dropdown without choosing anything, and make sure it closed.
+ *
+ * Escape pressed ON the element did not close Rippling's dropdowns (measured
+ * on the live form: every list stayed open and they stacked up over the
+ * questions below). Escape from the page keyboard does, as it does for a
+ * person. If the list is still open, a second click on a non-typeable trigger
+ * toggles it shut. Never Tab or Enter: those commit the highlighted option.
+ */
+async function closeDropdown(page, locator, { toggle = false } = {}) {
+  const topPage = typeof page?.page === 'function' ? page.page() : page;
+  const keyboard = topPage?.keyboard ?? null;
+  try { if (keyboard) await keyboard.press('Escape'); else await locator.press?.('Escape'); } catch { /* best effort */ }
+  if (!(await isExpanded(locator))) return;
+  // Rippling closes ONLY on a click outside (measured on the live form:
+  // Escape and a second click on the trigger both leave it open).
+  await clickOutside(page, locator);
+  if (toggle && (await isExpanded(locator))) { try { await locator.click?.(); } catch { /* best effort */ } }
+}
+
+/* c8 ignore start - executes in the browser, not under node coverage */
+function emptySpotBeside(el) {
+  // Nothing a click could change: no link, button, field, label (a label
+  // click toggles its control), option, or anything focusable or clickable.
+  const INTERACTIVE = 'a, button, input, select, textarea, label, summary, details, iframe, '
+    + '[role="option"], [role="listbox"], [role="button"], [role="combobox"], [role="radio"], [role="checkbox"], '
+    + '[role="link"], [role="menuitem"], [role="tab"], [role="switch"], [contenteditable="true"], [onclick], '
+    + '[tabindex]:not([tabindex="-1"])';
+  const r = el.getBoundingClientRect();
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const midY = r.top + r.height / 2;
+  const points = [
+    [r.left - 16, midY], [r.left - 40, midY], [r.left, r.top - 10], [r.right + 30, midY],
+    [8, midY], [W - 8, midY], [8, 8], [W / 2, 8],
+  ];
+  for (const [x, y] of points) {
+    if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    const hit = document.elementFromPoint(x, y);
+    if (hit && !hit.closest(INTERACTIVE) && !el.contains(hit)) return { x, y };
+  }
+  return null;
+}
+/* c8 ignore stop */
+
+/** Click a verified empty spot beside `locator`'s element (see emptySpotBeside). */
+async function clickOutside(scope, locator) {
+  try {
+    if (typeof locator?.evaluate !== 'function') return;
+    const spot = await locator.evaluate(emptySpotBeside);
+    if (!spot) return;
+    let { x, y } = spot;
+    let topPage = scope;
+    if (typeof scope?.page === 'function' && typeof scope?.frameElement === 'function') {
+      // A frame: its coordinates start at the frame element's box.
+      const box = await (await scope.frameElement())?.boundingBox?.();
+      if (!box) return;
+      x += box.x; y += box.y;
+      topPage = scope.page();
+    }
+    await topPage?.mouse?.click?.(x, y);
+  } catch { /* best effort */ }
+}
+
+/**
+ * The choices a custom dropdown offers, read by opening it and closing it
+ * again with Escape. Nothing is selected: on Rippling, Escape leaves the
+ * dropdown showing "Select" (verified on the live form, 2026-11-12).
+ *
+ * Without this the planner saw a Yes/No question with no choices, so a stored
+ * answer could not be mapped onto one, and a question that had to go to the
+ * person reached them with no choices to pick from.
+ *
+ * @returns {Promise<Array<{value: string, label: string}>>}
+ */
+export async function readDropdownChoices(page, field) {
+  if (!field?.selector || (await safeCount(page, field.selector)) !== 1) return [];
+  const loc = page.locator(field.selector).first();
+  try { await loc.click?.(); } catch { return []; }
+  const scope = await liveListboxSelector(loc);
+  const texts = scope ? await comboboxOptionTexts(page, { listboxSelector: scope }) : [];
+  await closeDropdown(page, loc, { toggle: field.typeable === false });
+  return [...new Set(texts)].map((t) => ({ value: t, label: t }));
+}
+
+/**
+ * Answer a dropdown you cannot type into (`<div role="combobox">`): open it,
+ * map the answer onto one of the options it shows, click that option.
+ * Whole-word matching only (mapToChoice); no "top option" guess, ever.
+ */
+async function chooseFromDropdown(page, field, value) {
+  if ((await safeCount(page, field.selector)) !== 1) return { ok: false, action: 'combobox', error: 'selector not unique' };
+  const loc = page.locator(field.selector).first();
+  try { await loc.click?.(); } catch (err) { return { ok: false, action: 'combobox', error: err.message }; }
+  const scope = await liveListboxSelector(loc) ?? field.listboxSelector ?? null;
+  const { selector, texts } = await comboboxOptions(page, { listboxSelector: scope });
+  const offered = texts.filter(Boolean);
+  if (!offered.length) {
+    await closeDropdown(page, loc, { toggle: true });
+    return { ok: false, action: 'combobox', error: 'the dropdown showed no options' };
+  }
+  const want = String(value ?? '').trim();
+  const pick = offered.find((t) => t.toLowerCase() === want.toLowerCase()) ?? mapToChoice(want, null, offered);
+  if (!pick) {
+    await closeDropdown(page, loc, { toggle: true });
+    return { ok: false, action: 'combobox', error: `no option matches "${value}"` };
+  }
+  try {
+    await page.locator(selector).nth(texts.indexOf(pick)).click();
+  } catch (err) {
+    await closeDropdown(page, loc, { toggle: true });
+    return { ok: false, action: 'combobox', error: err.message };
+  }
+  return { ok: true, action: 'combobox', chosen: pick, locator: loc };
 }
 
 /** Find the option whose label or value best matches `value` (case-insensitive). */
@@ -222,12 +419,16 @@ async function readBackChoice(locator, kind, fallback) {
     const text = await locator.evaluate((el, k) => {
       if (k === 'select') return el.selectedOptions?.[0]?.textContent ?? '';
       if (k === 'radio') {
-        if (!el.checked) return '';
+        // A styled radio reports its state on the box it draws (aria-checked).
+        const box = el.closest('[role="radio"]');
+        if (!el.checked && box?.getAttribute('aria-checked') !== 'true') return '';
         const lab = (el.id && document.querySelector(`label[for="${el.id}"]`)) || el.closest('label');
-        return (lab?.textContent ?? el.value ?? '');
+        return (lab?.textContent ?? box?.textContent ?? el.value ?? '');
       }
+      // A custom dropdown (<div role="combobox">) shows its choice as text.
+      if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return el.textContent ?? '';
       // react-select and friends render the committed value next to the input.
-      const box = el.closest('[class*="select__control"], [class*="-control"], [class*="container"], [role="combobox"]')
+      const box = el.parentElement?.closest('[class*="select__control"], [class*="-control"], [class*="container"], [role="combobox"]')
         ?? el.parentElement;
       const single = box?.querySelector?.('[class*="single-value"], [class*="singleValue"], [class*="selected"]');
       return single?.textContent ?? el.value ?? '';
@@ -297,6 +498,17 @@ export async function applyValue(page, field, value, { requiresSponsorship } = {
       if ((await safeCount(page, field.selector)) !== 1) return { ok: false, action: 'checkbox', error: 'selector not unique' };
       const on = AFFIRMATIVE.has(String(resolvedValue ?? '').trim().toLowerCase());
       const loc = page.locator(field.selector).first();
+      if (field.styled && typeof loc.evaluate === 'function') {
+        // A styled checkbox's real input is invisible and its drawn box sits
+        // on top, so a pointer click (even forced) lands on the drawing and
+        // Playwright reports "did not change its state". Toggling the input
+        // itself fires the click/input/change events the widget listens to.
+        await loc.evaluate((node, want) => { if (node.checked !== want) node.click(); }, on);
+        if (typeof loc.isChecked === 'function' && (await loc.isChecked()) !== on) {
+          return { ok: false, action: 'checkbox', error: 'the styled checkbox did not take the change' };
+        }
+        return { ok: true, action: on ? 'check' : 'uncheck' };
+      }
       if (on) { await (loc.check?.() ?? loc.click()); }
       else if (loc.uncheck) { await loc.uncheck(); }
       return { ok: true, action: on ? 'check' : 'uncheck' };
@@ -307,8 +519,22 @@ export async function applyValue(page, field, value, { requiresSponsorship } = {
       if (!opt || !opt.selector) return { ok: false, action: 'radio', error: `no option matches "${resolvedValue}"` };
       if ((await safeCount(page, opt.selector)) !== 1) return { ok: false, action: 'radio', error: 'option not unique' };
       const loc = page.locator(opt.selector).first();
-      await (loc.check?.() ?? loc.click());
+      if (field.styled) {
+        // The input is hidden; the person clicks the box drawn around it.
+        const box = typeof loc.locator === 'function' ? loc.locator('xpath=ancestor::*[@role="radio"][1]') : null;
+        if (box && (await box.count?.()) === 1) await box.click();
+        else if (typeof loc.evaluate === 'function') await loc.evaluate((node) => node.click());
+        else await (loc.check?.() ?? loc.click());
+      } else {
+        await (loc.check?.() ?? loc.click());
+      }
       return confirmChoice(loc, 'radio', opt.label ?? opt.value);
+    }
+
+    if (kind === 'combobox' && field.typeable === false) {
+      const res = await chooseFromDropdown(page, field, resolvedValue);
+      if (!res.ok) return res;
+      return confirmChoice(res.locator, res.action, res.chosen);
     }
 
     if (kind === 'combobox') {
@@ -317,8 +543,24 @@ export async function applyValue(page, field, value, { requiresSponsorship } = {
       // Open the widget, type the value (react-select listens on input events),
       // then commit a matching option from the dropdown.
       try { await input.click?.(); } catch { /* best effort */ }
-      await input.fill(String(resolvedValue));
-      const res = await pickComboboxOption(page, field, resolvedValue);
+      // The popup this input controls, read live (see liveListboxSelector).
+      let live = field.listboxSelector ? field : { ...field, listboxSelector: await liveListboxSelector(input) };
+      // A stored answer is often a sentence ("Yes, open to relocation within
+      // the United States") while the widget offers "Yes" / "No". Typing the
+      // sentence filters the list to nothing. When the opened list shows its
+      // choices, map the answer onto one of them first, the same way a native
+      // select is answered.
+      let typed = String(resolvedValue);
+      const needsChoice = /^(yes|no)\b/i.test(typed.trim()) || typed.length > MAX_COMBOBOX_AUTOPICK || field.selectLike === true;
+      const offered = needsChoice ? await comboboxOptionTexts(page, live) : [];
+      if (offered.length) {
+        const mapped = mapToChoice(typed, null, offered);
+        if (mapped) typed = mapped;
+      }
+      await input.fill(typed);
+      // Some typeaheads only name their list once results arrive.
+      if (!live.listboxSelector) live = { ...live, listboxSelector: await liveListboxSelector(input) };
+      const res = await pickComboboxOption(page, live, typed);
       // Never leave stray filter text behind when we could not commit a choice —
       // an unselected combobox showing leftover text reads as a wrong answer.
       if (!res.ok) { try { await input.fill?.(''); } catch { /* best effort */ } return res; }
@@ -351,6 +593,21 @@ export async function fillScannedFields(page, scannedFields = [], { candidate, s
   // planned or filled here — attaching documents is uploadRunner's job, and a
   // text value typed into a file input would be both wrong and rejected.
   const fillable = scannedFields.filter((f) => f.kind !== 'file');
+  // A dropdown's choices are only in the DOM while it is open. Read them first
+  // (open, read, Escape), so the planner can map a stored answer onto one and
+  // a question for the person carries the choices the form really offers.
+  for (const f of fillable) {
+    const fixedList = f.kind === 'combobox' && (f.typeable === false || f.selectLike === true);
+    if (!fixedList || f.hasValue === true || (f.options ?? []).length) continue;
+    const key = f.selector ?? `${f.kind}:${f.name}`;
+    if (alreadyFilled.has(key)) continue;
+    // The runner scans twice per step (once more for conditional questions);
+    // a dropdown already read on this page is not opened again.
+    const cache = choiceCacheFor(page);
+    const cacheKey = `${f.selector}|${f.label}`;
+    if (!cache.has(cacheKey)) cache.set(cacheKey, await readDropdownChoices(page, f));
+    f.options = cache.get(cacheKey);
+  }
   // Feed the existing deterministic planner (label -> value + source).
   const planInput = fillable.map((f) => ({
     label: f.label,
@@ -365,12 +622,20 @@ export async function fillScannedFields(page, scannedFields = [], { candidate, s
   // simply left blank so the run can still advance.
   // `options` rides along so the dashboard's answer form can offer the choices
   // the live form actually had, instead of asking you to guess its wording.
-  const needsUserAnnotated = needsUser.map((nu) => {
+  //
+  // A field the page ALREADY answered (a phone country code preset to "+1 US",
+  // details Rippling parsed from the uploaded resume, an answer restored from
+  // a draft) is not a question for the person: we have nothing better to put
+  // there. It used to be, so the person was asked to answer "Search".
+  const kept = [];
+  const needsUserAnnotated = [];
+  for (const nu of needsUser) {
     const f = scannedFields.find(
       (s) => s.label === nu.label && (s.selector ?? null) === (nu.selector ?? null),
     );
-    return { ...nu, required: f?.required === true, kind: f?.kind, options: f?.options ?? [] };
-  });
+    if (f?.hasValue === true) { kept.push({ label: nu.label, selector: nu.selector ?? null, kind: f.kind }); continue; }
+    needsUserAnnotated.push({ ...nu, required: f?.required === true, kind: f?.kind, options: f?.options ?? [] });
+  }
 
   const requiresSponsorship = candidateRequiresSponsorship(candidate);
   const filled = [];
@@ -404,5 +669,5 @@ export async function fillScannedFields(page, scannedFields = [], { candidate, s
       }
     }
   }
-  return { filled, needsUser: needsUserAnnotated, errors };
+  return { filled, needsUser: needsUserAnnotated, errors, kept };
 }

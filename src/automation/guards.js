@@ -135,6 +135,17 @@ const THIN_PAGE_MAX = 2000;
 const LOGIN_URL_HINTS = ['/login', '/signin', '/sign-in', '/auth', '/account/login', 'accounts.google.com'];
 
 /**
+ * Oracle Recruiting (Fusion HCM) sends Apply to `.../job/<id>/apply/email`: an
+ * "Authentication screen" that asks for an email address (and usually verifies
+ * it) before the application form exists. Its own wording ("You don't need to
+ * have an account") matches no login phrase, so a run carried on and tried to
+ * fill a page with no form on it (2026-11-13). The step is identified by its
+ * URL, which is exact, instead of by phrases a posting could also contain. The
+ * boundary after "email" keeps `/apply/emailed-…` from matching.
+ */
+const ORACLE_EMAIL_STEP = /\/hcmui\/candidateexperience\/[^?#]*\/job\/\d+\/apply\/email(?:[/?#]|$)/;
+
+/**
  * Inspect page content + URL for blocking conditions.
  *
  * @param {object} input
@@ -171,6 +182,14 @@ export function detectBlocker({ html = '', url = '', status } = {}) {
     if (hintMatchesUrl(urlLower, hint)) {
       signals.push(`url:${hint}`);
     }
+  }
+
+  if (ORACLE_EMAIL_STEP.test(urlLower)) {
+    return block(
+      'login',
+      'Oracle Recruiting asks for your email (and may verify it) before the application form; do that in the open browser window, then retry',
+      [...signals, 'url:oracle-apply-email'],
+    );
   }
 
   // 1) Strong, unambiguous challenge phrases — block regardless of page size.

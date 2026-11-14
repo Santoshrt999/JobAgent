@@ -21,6 +21,8 @@ function eligible(overrides = {}) {
       ...(overrides.packet ?? {}),
     },
     autoSubmitAuthorized: overrides.autoSubmitAuthorized ?? true,
+    // A supervised live run is on record for greenhouse (P1-11).
+    liveVerifiedAts: overrides.liveVerifiedAts ?? ['greenhouse'],
   };
 }
 
@@ -67,12 +69,30 @@ describe('Auto-Apply eligibility', () => {
 
   it('summarizes a mixed batch and publishes the fixture-tested ATS list', () => {
     const preview = evaluateAutoApplyBatch({
-      autoSubmitAuthorized: true,
+      autoSubmitAuthorized: true, liveVerifiedAts: ['greenhouse'],
       items: [eligible(), eligible({ job: { id: 'j2', sponsorship: 'Unconfirmed' } })],
     });
     expect(preview).toMatchObject({ total: 2, eligible: 1, ineligible: 1 });
     expect(FIXTURE_VERIFIED_AUTO_APPLY_ATS).toEqual(expect.arrayContaining([
       'greenhouse', 'lever', 'ashby', 'workday', 'smartrecruiters',
     ]));
+  });
+
+  it('refuses final Auto-submit on an ATS with no recorded live run (P1-11)', () => {
+    const result = evaluateAutoApplyEligibility(eligible({ liveVerifiedAts: [] }));
+    expect(result.eligible).toBe(false);
+    expect(result.reasons.join(' ')).toMatch(/no recorded supervised live run/);
+    expect(result.checks.find((c) => c.id === 'ats_live')).toMatchObject({ passed: false });
+  });
+
+  it('still allows assisted fill on an ATS with no live run, with a warning (P1-11)', () => {
+    const result = evaluateAutoApplyEligibility(eligible({ liveVerifiedAts: [], autoSubmitAuthorized: false }));
+    expect(result.eligible).toBe(true);
+    expect(result.warnings.join(' ')).toMatch(/no recorded supervised live run/);
+  });
+
+  it('a live run on one ATS does not cover another (P1-11)', () => {
+    const result = evaluateAutoApplyEligibility(eligible({ liveVerifiedAts: ['lever'] }));
+    expect(result.eligible).toBe(false);
   });
 });

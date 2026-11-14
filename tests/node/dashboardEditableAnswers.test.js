@@ -23,6 +23,15 @@ it('preserves user-written answer punctuation through rendering and Save all ans
       const profileMessage = () => {};
       const toast = () => {};
       const renderProfile = async () => {};
+      // The field rules and the Saving… label are the dialog's own concern
+      // (profileDialogStability.test.js); here they stay out of the way.
+      const ANSWER_HINTS = {};
+      const answerProblems = () => [];
+      const setAnswerError = () => {};
+      const refreshAnswersSave = () => {};
+      const parseAnswerError = () => null;
+      const cssEscape = String;
+      const withLabel = (button, label, fn) => fn();
       const postJson = async (path, body) => {
         window.savedAnswers = body.answers;
         return { count: body.answers.length };
