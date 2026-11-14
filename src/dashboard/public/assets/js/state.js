@@ -9,6 +9,8 @@ export const state = {
   pageSize: 100,
   sort: 'score',
   selectedId: null,
+  // Set by a view switch: the next list to load re-syncs the detail rail.
+  syncDetail: false,
   /** @type {Set<string>} */
   selected: new Set(),
   /** id -> row, for every row seen this session (batch actions need off-page rows) */
@@ -38,6 +40,15 @@ export const state = {
   roleQuery: null,
   /** Last link-check result per job id, so a re-render does not erase it. */
   linkHealth: new Map(),
+  /** Why the last Prepare of a job failed, by job id, until a later Prepare succeeds. */
+  prepareFailures: new Map(),
+  /** The template notice's items as last rendered (JSON), so a change redraws the open job. */
+  templatedItems: undefined,
+  /** Rewrite suggestions per job id (GET /api/jobs/:id/rewrites), and whether the feature is on. */
+  rewrites: new Map(),
+  rewritesEnabled: null,
+  /** Document versions per job id (GET /api/jobs/:id/versions). */
+  versions: new Map(),
   /** 'today' (the action queue), 'board' (Jobs) or 'applications'. */
   view: 'today',
   /** Last /api/today payload (or its derived fallback). */

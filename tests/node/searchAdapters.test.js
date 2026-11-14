@@ -73,13 +73,14 @@ describe('lever adapter', () => {
     expect(jobs[0]).toMatchObject({ source: 'lever', title: 'Lead Data Engineer', employmentType: 'Full-time' });
   });
 
-  it('uses the board slug as company and keeps team in metadata (no dead branch)', async () => {
+  it('names the company from the board slug and keeps team in metadata (no dead branch)', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([
       { id: 'x', text: 'Data Engineer', hostedUrl: 'http://l',
         categories: { location: 'Remote', team: 'Platform' }, descriptionPlain: 'SQL' },
     ]));
     const { jobs } = await lever.run({ boards: ['globex'] }, { fetchImpl });
-    expect(jobs[0].company).toBe('globex');
+    // The board token is shown as a name (BUG-13), never as "globex".
+    expect(jobs[0].company).toBe('Globex');
     expect(jobs[0].rawMetadata.team).toBe('Platform');
   });
 });
@@ -94,7 +95,7 @@ describe('workday adapter', () => {
     );
     expect(errors).toHaveLength(0);
     expect(jobs).toHaveLength(3);
-    expect(jobs[0]).toMatchObject({ source: 'workday', company: 'acme', title: 'Senior Data Engineer' });
+    expect(jobs[0]).toMatchObject({ source: 'workday', company: 'Acme', title: 'Senior Data Engineer' });
     expect(jobs[0].url).toContain('acme.wd1.myworkdayjobs.com');
     expect(jobs[0].jdText).toContain('Azure Databricks');
     expect(jobs[0].rawMetadata.summaryOnly).toBe(true);

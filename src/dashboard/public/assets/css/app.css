@@ -27,7 +27,7 @@
      three-step hierarchy still reads as a hierarchy. */
   --text: #e8eef6;
   --text-dim: #9aa8ba;
-  --text-faint: #78889c;
+  --text-faint: #8797ac;
 
   /* accents */
   --accent: #4d9fff;
@@ -94,6 +94,8 @@
      a pure-black shadow reads as a grey smudge; carrying the background's own
      hue into it keeps one consistent light source across both themes. */
   --shadow-sm: 0 1px 3px rgba(2, 5, 12, .5);
+  /* The shadow a docked bar (the sticky pager) casts up over the list. */
+  --dock-shade: rgba(2, 5, 12, .85);
   --shadow: 0 8px 24px rgba(2, 5, 12, .55);
   --shadow-lg: 0 24px 60px rgba(2, 5, 12, .7);
 
@@ -103,7 +105,9 @@
      nobody could see, and one that every new panel extended by inventing its
      own. Every size in this file is one of these. Theme-independent, so they
      live here only. */
-  --fs-xs: 11px;    /* labels, uppercase eyebrows, badges */
+  /* 12px floor for anything that carries meaning (audit 2026-11-13): at 11px,
+     nine kinds of badge, chip and meter label turned a busy row to confetti. */
+  --fs-xs: 12px;    /* labels, uppercase eyebrows, badges */
   --fs-sm: 12px;    /* secondary text, meta lines, small buttons */
   --fs-md: 13px;    /* controls and dense body text */
   --fs-lg: 14px;    /* body */
@@ -173,20 +177,25 @@
   --text: #131a24;
   --text-dim: #566274;
   /* Light failed harder than dark: #7d8899 was 3.59:1 on --surface and only
-     3.34:1 on --bg. 4.93:1 / 4.60:1 — AA on both surfaces it actually sits on. */
-  --text-faint: #68717f;
-  --accent: #1668d6;
+     3.34:1 on --bg. Then #68717f was 4.43:1 on --surface-2 (the email list's
+     details, axe 2026-11-11). #5f6875 is AA on every light surface:
+     5.64 / 5.25 / 5.07 / 4.71 on surface / bg / surface-2 / surface-3. */
+  --text-faint: #5f6875;
+  --accent: #1360c7;
   --accent-hover: #0f57ba;
   --accent-ink: #ffffff;
-  --accent-soft: rgba(22, 104, 214, .1);
-  --good: #0f8f5c;
-  --good-soft: rgba(15, 143, 92, .1);
-  --warn: #9a6300;
-  --warn-soft: rgba(154, 99, 0, .12);
+  --accent-soft: rgba(19, 96, 199, .1);
+  /* AA on its own tinted chip, not just on white (axe, 2026-11-11): the old
+     #0f8f5c was 3.64:1 on --good-soft, #9a6300 4.3:1 on --warn-soft, and
+     #1668d6 4.39:1 on --surface-3. These are 5.3, 5.09 and 4.97. */
+  --good: #07623f;
+  --good-soft: rgba(10, 112, 73, .1);
+  --warn: #8a5800;
+  --warn-soft: rgba(138, 88, 0, .12);
   /* Text ON the warm fill, and warm text on a warm tint: both clear 4.5:1. */
   --on-warn: #ffffff;
   --warn-text: #6f4600;
-  --bad: #c8332e;
+  --bad: #ad2a25;
   --bad-soft: rgba(200, 51, 46, .1);
   --chip: #e6ebf2;
   --line-strong: #a9b5c6;
@@ -210,6 +219,7 @@
   --ambient-a: rgba(22, 104, 214, .06);
   --ambient-b: rgba(14, 134, 168, .04);
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, .08);
+  --dock-shade: rgba(16, 24, 40, .14);
   --shadow: 0 8px 24px rgba(16, 24, 40, .12);
   --shadow-lg: 0 24px 60px rgba(16, 24, 40, .2);
   --sig-b: #2f8fd6;
@@ -234,18 +244,18 @@
     --text-dim: #566274;
     /* Light failed harder than dark: #7d8899 was 3.59:1 on --surface and only
        3.34:1 on --bg. 4.93:1 / 4.60:1 — AA on both surfaces it actually sits on. */
-    --text-faint: #68717f;
-    --accent: #1668d6;
+    --text-faint: #5f6875;
+    --accent: #1360c7;
     --accent-hover: #0f57ba;
     --accent-ink: #ffffff;
-    --accent-soft: rgba(22, 104, 214, .1);
-    --good: #0f8f5c;
-    --good-soft: rgba(15, 143, 92, .1);
-    --warn: #9a6300;
-    --warn-soft: rgba(154, 99, 0, .12);
+    --accent-soft: rgba(19, 96, 199, .1);
+    --good: #07623f;
+    --good-soft: rgba(10, 112, 73, .1);
+    --warn: #8a5800;
+    --warn-soft: rgba(138, 88, 0, .12);
     --on-warn: #ffffff;
     --warn-text: #6f4600;
-    --bad: #c8332e;
+    --bad: #ad2a25;
     --bad-soft: rgba(200, 51, 46, .1);
     --chip: #e6ebf2;
     --line-strong: #a9b5c6;
@@ -269,6 +279,7 @@
     --ambient-a: rgba(22, 104, 214, .06);
     --ambient-b: rgba(14, 134, 168, .04);
     --shadow-sm: 0 1px 2px rgba(16, 24, 40, .08);
+    --dock-shade: rgba(16, 24, 40, .14);
     --shadow: 0 8px 24px rgba(16, 24, 40, .12);
     --shadow-lg: 0 24px 60px rgba(16, 24, 40, .2);
     --sig-b: #2f8fd6;
@@ -545,7 +556,9 @@ button.icon { padding: 4px 7px; }
    in the Profile menu), so brand, two utilities and Find jobs share a line. */
 @media (max-width: 480px) {
   .theme-toggle { display: none; }
-  .only-narrow { display: flex !important; }
+  .menu-pop .only-narrow { display: flex !important; }
+  /* The Explore link steps out with it; its twin is in the Profile menu too. */
+  .explore-link { display: none; }
   .actions-sep { display: none; }
 }
 .spacer { flex: 1 1 auto; }
@@ -765,11 +778,12 @@ button.icon { padding: 4px 7px; }
 .run-row .who { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .run-row .num { color: var(--text-dim); font-variant-numeric: tabular-nums; flex: none; }
 .run-row .state { flex: none; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .4px; }
-.run-row .state.done { color: var(--good); }
+.run-row .state.done, .run-row .state.prepared { color: var(--good); }
 .run-row .state.running { color: var(--accent); }
 .run-row .state.partial, .run-row .state.skipped { color: var(--warn); }
-.run-row .state.failed, .run-row .state.cancelled { color: var(--bad); }
-.run-row .state.queued { color: var(--text-faint); }
+.run-row .state.failed { color: var(--bad); }
+/* Stopped by the person before it started: nothing broke, so not red. */
+.run-row .state.queued, .run-row .state.cancelled { color: var(--text-faint); }
 
 /* One failure = the cause, what the provider said, what to do, and what it
    cost. Only the last of those used to be shown. */
@@ -994,6 +1008,10 @@ dialog { background: var(--surface); }
 /* Pipeline health, as plain facts. */
 .health {
   display: flex; align-items: center; gap: var(--s3); flex-wrap: nowrap;
+  /* The containing block for its .sr-only labels: without it they were placed
+     against the page and escaped this strip's clipping, widening a 390px
+     phone layout to 487px (a sideways scroll on every view). */
+  position: relative;
   min-width: 0; overflow: hidden;
   font-size: var(--fs-sm); color: var(--text-faint);
 }
@@ -1015,11 +1033,15 @@ button.stat:hover { background: none; border-color: transparent; }
 .stat .l { font-size: var(--fs-sm); color: var(--text-dim); }
 .stat.attn b, .stat.attn .l { color: var(--warn-text); }
 .stat.bad b, .stat.bad .l { color: var(--bad); }
+/* A tinted fill, like a .chip.warn — not a 1px outline. The outline drew the
+   exact shape of the focus ring, so "216 undated" looked stuck in focus. */
 .stat.attn, .stat.bad {
-  border: 1px solid color-mix(in srgb, currentColor 55%, transparent);
-  border-radius: var(--r-full); padding: 1px 9px; color: var(--warn-text);
+  border: 0; border-radius: var(--r-full); padding: 2px 9px;
+  color: var(--warn-text); background: var(--warn-soft);
 }
-.stat.bad { color: var(--bad); }
+.stat.bad { color: var(--bad); background: var(--bad-soft); }
+button.stat.attn:hover { background: color-mix(in srgb, var(--warn) 22%, transparent); }
+button.stat.bad:hover { background: color-mix(in srgb, var(--bad) 22%, transparent); }
 .stat.attn + .stat::before, .stat.bad + .stat::before,
 .stat + .stat.attn::before, .stat + .stat.bad::before { display: none; }
 
@@ -1113,6 +1135,9 @@ button.stat:hover { background: none; border-color: transparent; }
   }
   .tabs::-webkit-scrollbar, .health::-webkit-scrollbar { display: none; }
   .tabs .tab, .health .stat { flex: none; }
+  /* Something that needs you (unverified submits) leads the strip: scrolled
+     past the edge at 390px, it was the one fact nobody saw. */
+  .health .stat.bad { order: -1; }
   .statusbar .runbox { width: 100%; min-width: 0; }
   .statusbar .run-main { min-width: 0; flex: 1 1 auto; }
   .statusbar .spacer { display: none; }
@@ -1587,7 +1612,7 @@ button.stat:hover { background: none; border-color: transparent; }
 }
 table { width: 100%; border-collapse: collapse; }
 th, td {
-  text-align: left; padding: 10px 11px;
+  text-align: left; padding: 8px 11px;
   border-bottom: 1px solid var(--line-soft); vertical-align: middle;
 }
 
@@ -1711,8 +1736,13 @@ td.check { width: 34px; }
 .pagerbar {
   display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
   position: sticky; bottom: 0; z-index: 3;
-  background: color-mix(in srgb, var(--bg) 97%, transparent);
+  /* Opaque, not 97%: at 97% the rows scrolling underneath ghosted through the
+     counts and the First/Prev buttons, so the pager read as overlapping text.
+     A soft upward shadow says "docked over the list" instead of a hard seam. */
+  background: var(--bg);
   border-top: 1px solid var(--line-soft);
+  box-shadow: 0 -10px 18px -12px var(--dock-shade);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
   margin-top: -1px;
 }
 /* Phones: neither the header nor the pager sticks. Together they held 41% of
@@ -2086,6 +2116,20 @@ button.rs-open.prepared:hover { background: var(--accent-soft); }
 .detail-panel > .rail-sec[data-section="stepper"] { border-top: 0; margin-top: var(--s3); padding-top: 0; }
 .detail-panel > .rail-sec > h3:first-child { margin-top: 0; }
 .detail-panel .actions { margin-top: 0; }
+/* A card's "See what stopped it" lands here: one soft wash that fades, so
+   the eye finds the reason without a flashing border. */
+.rail-sec { scroll-margin-top: var(--s3); border-radius: var(--r-md); }
+/* Where a job is parked when it is off the progress line. */
+.offramp { display: flex; align-items: center; gap: var(--s2); color: var(--text); font-weight: 600; }
+.offramp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.offramp-dot.warn { background: var(--warn); }
+.offramp-dot.bad { background: var(--bad); }
+.rail-sec.is-spotlit { animation: spotlit 1.4s var(--ease-out); }
+@keyframes spotlit {
+  0% { background-color: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); }
+  100% { background-color: transparent; box-shadow: 0 0 0 6px transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .rail-sec.is-spotlit { animation: none; } }
 .rail-label {
   display: block; font-size: var(--fs-md); color: var(--text); font-weight: 650;
   margin: var(--s4) 0 var(--s2);
@@ -2121,6 +2165,62 @@ dialog.detail-sheet[open] { display: flex; flex-direction: column; animation: sh
 .detail-head { display: flex; gap: var(--s3); align-items: flex-start; }
 .detail-head h2 { margin: 0; font-size: var(--fs-xl); line-height: 1.35; }
 .chiprow { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+
+/* Requirement -> resume evidence, quoted from the master resume. */
+.fitcard-evidence { margin-top: var(--s3); }
+.fitcard-evidence summary { cursor: pointer; color: var(--text-dim); font-size: var(--fs-sm); font-weight: 600; }
+.evidence { list-style: none; margin: var(--s2) 0; padding: 0; display: grid; gap: var(--s2); }
+.ev { display: grid; gap: 3px; padding-left: 12px; border-left: 2px solid var(--line); font-size: var(--fs-sm); }
+.ev.ok { border-left-color: var(--good); }
+.ev.none { border-left-color: var(--warn); }
+.ev-term { font-size: var(--fs-sm); }
+.ev-line { color: var(--text-dim); line-height: 1.5; quotes: '“' '”'; }
+
+/* Auto-fill readiness: two plain lines, each with a status dot. */
+.readiness { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
+.readiness .rd { display: grid; grid-template-columns: 8px 1fr; column-gap: 10px; row-gap: 2px; align-items: baseline; font-size: var(--fs-md); }
+.readiness .rd::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); grid-row: 1; transform: translateY(-1px); }
+.readiness .rd > * { grid-column: 2; }
+.readiness .rd-instant::before { background: var(--good); }
+.readiness .rd-portal::before { background: var(--warn); }
+.readiness .rd .muted { font-size: var(--fs-sm); line-height: 1.5; }
+.readiness .rd button { justify-self: start; margin-top: 4px; }
+
+/* "Sign in once, retry all": stopped fills grouped by employer portal. */
+.signin-strip {
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line)); background: var(--warn-soft);
+  border-radius: var(--r-md); padding: var(--s3) var(--s4); margin: 0 0 var(--s4);
+}
+.signin-head h3 { margin: 0; font-size: var(--fs-md); }
+.signin-head p { margin: 4px 0 var(--s2); font-size: var(--fs-sm); max-width: 72ch; }
+.signin-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.signin-row { display: flex; align-items: center; gap: var(--s3); justify-content: space-between; min-width: 0; }
+.signin-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); }
+.signin-row button { flex: none; }
+.today-signin { list-style: none; }
+/* Proposals are suggestions, not warnings: the calm surface, not amber. */
+.proposal-strip { border-color: var(--line); background: var(--surface-2); margin-top: var(--s4); }
+.proposal-strip .signin-who { white-space: normal; }
+
+/* Conditions buried in the posting: amber tags under the header, each opening
+   onto the sentence it came from. Hard constraints (clearance, citizenship,
+   fully onsite) read in the stronger tone. */
+.clauses { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.clause details { display: contents; }
+.clause summary {
+  list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  min-height: 24px; padding: 0 10px; border-radius: var(--r-full);
+  font-size: var(--fs-sm); font-weight: 560; color: var(--warn); background: var(--warn-soft);
+}
+.clause summary::-webkit-details-marker { display: none; }
+.clause summary::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.clause.k-clearance summary, .clause.k-citizenship summary, .clause.k-onsite_full summary { color: var(--bad); background: var(--bad-soft); }
+.clause details[open] { display: block; }
+.clause:has(details[open]) { flex-basis: 100%; }
+.clause-quote {
+  display: block; margin: 6px 0 2px; padding: 6px 10px; border-left: 2px solid currentColor;
+  color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.5; quotes: '“' '”';
+}
 
 .stepper { display: flex; gap: 3px; margin: var(--s3) 0 var(--s1); }
 .stepper .s { flex: 1; height: 6px; border-radius: 3px; background: var(--chip); }
@@ -2549,12 +2649,14 @@ kbd {
 /* "Add profile" under the list and in the Profile menu. */
 .pf-wrap { display: flex; flex-direction: column; gap: var(--s2); align-items: flex-start; }
 .pf-wrap .pf-list { align-self: stretch; }
-.menu-pop .pf-add-item { gap: var(--s2); color: var(--accent); font-weight: 600; }
-.menu-pop .pf-add-item .ic { width: 14px; height: 14px; }
-/* Its pair is quieter: removing is the rarer, heavier act, and the dialog it
-   opens is where the red lives. */
-.menu-pop .pf-remove-item { gap: var(--s2); color: var(--text-dim); }
-.menu-pop .pf-remove-item .ic { width: 14px; height: 14px; }
+/* "Add profile" closes the people list: the avatar column carries a plus in
+   the same 26px slot, so it reads as one more row rather than a link. */
+.menu-pop .pf-add-item { gap: var(--s2); padding: 6px 8px; color: var(--text-dim); font-weight: 500; }
+.menu-pop .pf-add-item:hover, .menu-pop .pf-add-item:focus-visible { color: var(--text); }
+.menu-pop .pf-add-item .ic {
+  width: 26px; height: 26px; padding: 6px; flex: none; border-radius: 50%;
+  border: 1px dashed var(--line-strong); stroke-width: 2;
+}
 
 /* ── Remove a profile ──
    The people as one bordered list, like the Master resume list: a whole row
@@ -2588,6 +2690,10 @@ kbd {
 .person-dialog .dlg-body > label:first-of-type { margin-top: var(--s2); }
 .person-dialog input[type=text], .person-dialog input[type=email] { margin-bottom: 0; width: 100%; }
 .person-dialog select { width: 100%; }
+/* A select resting on its "Select …" prompt reads like a placeholder, until a choice replaces it.
+   The options keep the normal colour, or the whole list would be grey. */
+.person-dialog select:has(option[value=""]:checked) { color: color-mix(in srgb, var(--text-dim) 50%, var(--text-faint)); }
+.person-dialog select option { color: var(--text); }
 .person-dialog .req { color: var(--bad); }
 .person-resume {
   display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
@@ -2602,6 +2708,17 @@ kbd {
 .person-seed .person-toggle { margin-bottom: 0; }
 .person-seed .fineprint { margin: 4px 0 0 2px; max-width: 60ch; }
 [aria-invalid="true"] { border-color: var(--bad) !important; }
+.opt { color: var(--text-faint); font-weight: 400; }
+.person-legend { margin: var(--s2) 0 0; }
+.person-why, .pf-why { font-size: var(--fs-sm); align-self: center; min-width: 0; }
+.st-ok { color: var(--good); }
+.pf-hint { margin: 0 0 4px; }
+.notice-items { margin: 6px 0 0; padding-left: 18px; }
+.notice-items li { margin: 0 0 6px; }
+.notice-items .notice-fix { margin-top: 2px; }
+.prepare-problem { margin-top: var(--s2); }
+/* A config file path has no spaces; without this it pushed the dialog 10px wider than a phone. */
+.pf-path { overflow-wrap: anywhere; min-width: 0; }
 .chips-input {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: var(--h-md);
   padding: 4px 6px; border: 1px solid var(--line); border-radius: var(--r-sm);
@@ -2646,7 +2763,35 @@ kbd {
 .pf-mi-name, .pf-mi-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pf-mi-name { font-weight: 600; }
 .pf-mi-sub { font-size: var(--fs-xs); color: var(--text-faint); font-weight: 500; }
-.menu-pop .pf-menuitem[aria-checked="true"] .pf-mi-sub { color: var(--accent); }
+/* The active person is ticked, not coloured: the tick and aria-checked say it. */
+.pf-mi-check { width: 16px; height: 16px; flex: none; color: var(--accent); stroke-width: 2.4; }
+/* One row per person: the switch fills it, the remove sits at its end and
+   appears on hover or keyboard focus (always shown where there is no hover). */
+.pf-mi-row { position: relative; display: flex; align-items: center; }
+.pf-mi-row .pf-menuitem { padding-right: 36px; }
+.pf-mi-row.is-active .pf-menuitem { padding-right: 10px; }
+.menu-pop .pf-mi-remove {
+  position: absolute; right: 4px; top: 50%; translate: 0 -50%;
+  width: 28px; height: 28px; padding: 0; justify-content: center; border-radius: 50%;
+  color: var(--text-faint); opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.menu-pop .pf-mi-remove .ic { width: 14px; height: 14px; }
+.pf-mi-row:hover .pf-mi-remove, .pf-mi-row:focus-within .pf-mi-remove { opacity: 1; }
+.menu-pop .pf-mi-remove:hover { color: var(--bad); background: var(--bad-soft); }
+@media (hover: none) { .menu-pop .pf-mi-remove { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .menu-pop .pf-mi-remove { transition: none; } }
+/* A quiet trailing hint on a menu item: a file type, a shortcut, "opens elsewhere". */
+.menu-pop .mi-hint {
+  margin-left: auto; padding-left: var(--s3); font: 500 var(--fs-xs)/1 var(--font);
+  color: var(--text-faint); letter-spacing: .02em;
+}
+.menu-pop kbd.mi-hint {
+  padding: 2px 6px; border: 1px solid var(--line); border-radius: var(--r-xs); background: transparent;
+}
+.menu-pop .mi-ext { width: 13px; height: 13px; margin-left: auto; color: var(--text-faint); stroke-width: 2; }
+#activityMenu { min-width: 240px; }
+#accountMenu > [role="group"] { display: flex; flex-direction: column; gap: 1px; }
 
 /* The preview: collapsible, and shaped like the document it reads. */
 .mr-contents > summary {
@@ -2712,18 +2857,49 @@ kbd {
 .pf-section .evidence-note { margin-bottom: var(--s3); }
 
 /* One queued question. The card boundary matters: each is a separate decision
-   with its own answer box and its own Save. */
+   with its own answer and its own Save. Question first, then one quiet
+   metadata line, then the form's own choices as selectable chips. */
 .pf-q {
   border: 1px solid var(--line); border-radius: var(--r-md);
-  background: var(--surface-2); padding: var(--s3); margin-bottom: var(--s3);
+  background: var(--surface-2); padding: var(--s4); margin-bottom: var(--s3);
+  display: grid; gap: var(--s2);
 }
-.pf-q-head { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; }
-.pf-q-head b { font-size: var(--fs-md); overflow-wrap: anywhere; }
-.pf-q .fineprint { margin: 3px 0 var(--s2); }
-.pf-q textarea, .pf-q input[type=text] { margin-bottom: var(--s2); }
-.pf-choices { margin: var(--s2) 0; flex-wrap: wrap; }
-.pf-adv { margin-bottom: var(--s2); }
-.pf-adv summary { font-size: var(--fs-sm); color: var(--text-faint); cursor: pointer; margin-bottom: var(--s2); }
+.pf-q-text { margin: 0; font-size: var(--fs-md); font-weight: 620; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; max-width: 72ch; }
+.pf-q-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: var(--fs-sm); }
+.pf-q-meta .chip { min-height: 20px; }
+.pf-q-from { min-width: 0; overflow-wrap: anywhere; }
+.pf-q-from a { color: var(--text-dim); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.pf-q-from a:hover { color: var(--text); text-decoration-color: currentColor; }
+.pf-q-intro { margin: 0 0 var(--s3); font-size: var(--fs-sm); max-width: 72ch; }
+.pf-q-group { margin: var(--s5, 24px) 0 var(--s1); font-size: var(--fs-md); font-weight: 650; }
+.pf-q-label { margin-top: 2px; font-size: var(--fs-sm); color: var(--text-dim); }
+.pf-q textarea, .pf-q input[type=text] { margin: 0; }
+.pf-q-actions { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-top: 2px; }
+.pf-q-empty { margin: 0; }
+
+/* The form's choices: one-tap picks, the chosen one filled. */
+.pf-choices { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0; }
+.pf-choice {
+  min-height: 32px; padding: 0 14px; border-radius: var(--r-full);
+  border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  font-size: var(--fs-sm); font-weight: 560; cursor: pointer;
+  transition: background-color var(--dur-fast) ease, border-color var(--dur-fast) ease, color var(--dur-fast) ease, transform 100ms var(--ease-out);
+}
+.pf-choice:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.pf-choice:active { transform: scale(.97); }
+.pf-choice[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+/* Employer-specific questions: a compact list, never an answer box. */
+.pf-q-employer { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
+.pf-q-employer li {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s3); row-gap: 4px; align-items: start;
+  padding: var(--s3) var(--s4); border: 1px dashed var(--line); border-radius: var(--r-md);
+}
+.pf-q-employer .pf-q-text { grid-column: 1; font-weight: 560; }
+.pf-q-employer .pf-q-meta { grid-column: 1; }
+.pf-q-employer button { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+.pf-adv summary { font-size: var(--fs-sm); color: var(--text-faint); cursor: pointer; }
+.pf-adv[open] summary { margin-bottom: var(--s2); }
 
 /* Two columns on a laptop, one on a phone — an application form's contact
    block is short fields, and a single column of thirteen is a lot of scroll. */
@@ -2860,50 +3036,86 @@ kbd {
 }
 @keyframes toastin { from { opacity: 0; transform: translateY(6px); } }
 
-/* ── the bulk-action bar ──
-   Desktop: a 0px-tall sticky strip at the top of the board whose inner bar
-   lies exactly over the 40px header row, starting after the select-all
-   column. It sticks wherever the header sticks, so the actions stay beside
-   the rows they act on through a 7,000px board. */
+/* ── the table toolbar (bulk actions) ──
+   A 44px row docked above the column headers, shown only while rows are
+   ticked. Tinted with the accent and marked by an accent rail, so it reads as
+   a different layer from the rows it acts on. It used to float over the rows,
+   where it blended into them and could cover the focused row (WCAG 2.2
+   focus-not-obscured). Opening it inserts 44px above the table; selection.js
+   scrolls the page by the same amount so the clicked row does not move.
+
+   Order follows the work: count + Clear, then the decisions (Shortlist,
+   Reject, Archive, Compare), then the apply pipeline as ONE stepper,
+   Prepare > Approve > Auto-fill, with the step the selection is ready for
+   filled (selection.js sets `.primary`). It sticks under the top bar; the
+   column headers stick beneath it while it is open (--tbar-h). */
+:root { --tbar-h: 44px; }
 #selbar {
-  position: sticky; top: var(--topbar-h, 51px); z-index: 4; height: 0;
-  /* The wrapper never takes the pointer, only the bar inside it when open. On
-     phones the wrapper is a fixed, 52px-tall box: closed, it sat invisibly over
-     the bottom of the screen and swallowed taps meant for the pager and footer. */
-  pointer-events: none;
+  position: sticky; top: var(--topbar-h, 51px); z-index: 4;
+  height: 0; overflow: hidden;
+  container: selbar / inline-size;
+  border-top-left-radius: calc(var(--r-md) - 1px); border-top-right-radius: calc(var(--r-md) - 1px);
+}
+#boardwrap:has(#selbar[data-open="true"]) thead th { top: calc(var(--topbar-h, 51px) + var(--tbar-h)); }
+#selbar[data-open="true"] {
+  height: var(--tbar-h); overflow: visible;
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 #selbar .selbar-inner {
-  position: absolute; top: 0; left: 44px; right: 0; height: 40px;
-  container: selbar / inline-size;
-  display: flex; align-items: center; gap: 2px; padding: 0 6px 0 4px;
-  /* Opaque, tinted: it replaces the header row it sits on, so the column
-     names must not show through it. */
-  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface);
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent) 35%, var(--line));
-  border-top-right-radius: calc(var(--r-md) - 1px);
-  /* Hidden by default: invisible, inert to the pointer, out of the tab order
-     and the accessibility tree (visibility), and it fades out faster than it
-     fades in — the system answering, not deliberating. */
-  opacity: 0; visibility: hidden; transform: translateY(-3px); pointer-events: none;
+  position: absolute; inset: 0;
+  display: flex; align-items: center; gap: 4px; padding: 0 var(--s2) 0 var(--s4);
+  /* Hidden at rest: invisible, inert, out of the tab order and the
+     accessibility tree. Only opacity and transform move; it leaves faster
+     than it arrives. */
+  opacity: 0; visibility: hidden; transform: translateY(-2px); pointer-events: none;
   transition: opacity var(--dur-fast) ease, transform var(--dur-fast) var(--ease-out), visibility 0s linear var(--dur-fast);
 }
 #selbar[data-open="true"] .selbar-inner {
   opacity: 1; visibility: visible; transform: none; pointer-events: auto;
   transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out), visibility 0s;
 }
-.selbar-count { padding: 0 6px 0 2px; white-space: nowrap; font-size: var(--fs-md); }
-#selCount { color: var(--accent); font-weight: 650; font-variant-numeric: tabular-nums; }
-.selbar-sep { width: 1px; height: 18px; background: color-mix(in srgb, var(--accent) 25%, var(--line)); margin: 0 4px; flex: none; }
+/* The count is the anchor of the bar: a solid accent pill, tabular figures. */
+.selbar-count { flex: none; white-space: nowrap; }
+#selCount {
+  display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: var(--r-full);
+  background: var(--accent); color: var(--accent-ink);
+  font-size: var(--fs-sm); font-weight: 650; font-variant-numeric: tabular-nums;
+}
+.selbar-sep { width: 1px; height: 20px; background: color-mix(in srgb, var(--accent) 30%, var(--line)); margin: 0 6px; flex: none; }
 .selbar-group { display: flex; align-items: center; gap: 2px; }
-.selbar-pipeline { gap: 6px; margin-left: 4px; }
-.selbar-inner button.small { height: var(--h-sm); }
+.selbar-inner button.small { height: 30px; }
 .selbar-inner button.ghost { color: var(--text-dim); }
-.selbar-inner button.ghost:hover { color: var(--text); }
-/* Reject is the one action here that closes jobs: red only when you reach
-   for it, so it never shouts from a resting bar. It is undoable, and the
-   undo toast asks why. */
-.selbar-inner [data-decision="rejected"]:hover { color: var(--bad); background: var(--bad-soft); }
-.selbar-more .iconbtn { width: var(--h-sm); height: var(--h-sm); }
+.selbar-inner button.ghost:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.selbar-inner button:active:not(:disabled) { transform: scale(.97); }
+/* Each decision carries its meaning in its icon colour, quietly at rest:
+   a star for keeping, red for turning down. Labels stay neutral and
+   readable; nothing relies on colour alone. */
+.selbar-inner [data-decision="shortlisted"] .ic { color: var(--warn-text); }
+.selbar-inner [data-decision="rejected"] .ic { color: var(--bad); }
+.selbar-inner [data-decision="rejected"]:hover:not(:disabled) { color: var(--bad); background: var(--bad-soft); }
+
+/* The apply pipeline: one connected stepper in the order the work happens.
+   The filled step is the one the selection is ready for. */
+.selbar-pipeline {
+  margin-left: auto; gap: 0; padding: 3px; flex: none;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md);
+}
+.selbar-pipeline button.small {
+  height: 28px; padding: 0 12px; border: 0; background: transparent;
+  color: var(--text); font-weight: 560; border-radius: calc(var(--r-md) - 4px);
+}
+.selbar-pipeline button.small:hover:not(:disabled):not(.primary) { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.selbar-pipeline button.small:disabled { color: var(--text-faint); background: transparent; }
+.selbar-pipeline button.small.primary { background: var(--accent); color: var(--accent-ink); font-weight: 650; }
+.selbar-pipeline button.small.primary:hover { background: var(--accent-hover); }
+.step-sep {
+  width: 14px; height: 14px; flex: none; margin: 0 1px; background-color: var(--text-faint);
+  -webkit-mask: var(--ic-chev-r) center / 10px no-repeat; mask: var(--ic-chev-r) center / 10px no-repeat;
+}
+.selbar-more { margin-left: 4px; }
+.selbar-more .iconbtn { width: 30px; height: 30px; }
 .selbar-more .menu-pop { min-width: 220px; }
 /* The overflow menu only exists once the bar is too narrow for everything.
    In it, the step that is already the bar's primary button is not repeated. */
@@ -2918,7 +3130,7 @@ kbd {
   .selbar-clear .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .selbar-clear { width: var(--h-sm); padding: 0; justify-content: center; }
   .selbar-wide { display: none; }
-  .selbar-pipeline button:not(.primary) { display: none; }
+  .selbar-pipeline button:not(.primary), .step-sep { display: none; }
   .selbar-more { display: inline-block; }
   .selbar-sep { display: none; }
 }
@@ -2930,12 +3142,16 @@ kbd {
 /* Phones (cards, no header row to dock on): a floating glass bar above the
    thumb, with room reserved beneath the last card so it never sits on one. */
 @media (max-width: 860px) {
-  #selbar {
+  #selbar, #selbar[data-open="true"] {
     position: fixed; top: auto; height: auto; z-index: 40;
     left: var(--s3); right: var(--s3); bottom: calc(var(--s3) + env(safe-area-inset-bottom, 0px));
+    /* Only the bar inside is a surface here; the wrapper is a positioner
+       that must not catch taps meant for the cards beneath it. */
+    background: none; border: 0; box-shadow: none; border-radius: 0; pointer-events: none;
   }
+  #selbar .selbar-pipeline { margin-left: auto; }
   #selbar .selbar-inner {
-    position: static; inset: auto; height: 52px; padding: 0 8px 0 10px;
+    position: static; inset: auto; width: auto; max-width: none; height: 52px; padding: 0 8px 0 10px;
     border-radius: var(--r-lg); border: 1px solid var(--glass-line);
     background: var(--glass-strong);
     box-shadow: inset 0 1px 0 var(--glass-hi), var(--shadow-lg);
@@ -3015,6 +3231,11 @@ code.jobid {
    global anchor colour + underline made "Open PDF ↗" read as body copy. */
 a.btn { text-decoration: none; color: var(--text); }
 a.btn:hover { color: var(--text); }
+/* An icon-only LINK (the header's Explore link) is as quiet as the icon
+   buttons beside it; without this the rule above made it the brightest. */
+a.btn.iconbtn { color: var(--text-dim); }
+a.btn.iconbtn:hover { color: var(--text); }
+a.btn.iconbtn:active { transform: scale(.97); }
 
 /* ─────────────────── next actions ───────────────────
    One promoted action, then a scannable ranked list, then tool notices. The
@@ -3118,8 +3339,12 @@ a.btn:hover { color: var(--text); }
 .view-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s3); margin: 0 0 var(--s3); }
 .view-head h2 { margin: 0; font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -.02em; }
 .view-sub { margin: 2px 0 0; font-size: var(--fs-md); }
-.scopebar { margin: 0 0 var(--s3); }
-.scopebar .tabs { width: max-content; }
+/* The refresh status shares the stage-tab row (it used to take a line of its
+   own above the table); the filter chips row collapses when no filter is on. */
+.scopebar { margin: 0 0 var(--s3); display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+.boardbar:has(> .activefilters:empty) { display: none; }
+.scopebar .tabs { width: max-content; max-width: 100%; min-width: 0; flex: 0 1 auto; }
+@media (max-width: 720px) { .scopebar .boardstatus { display: none; } }
 .stat-link { margin-left: var(--s1); }
 .stat-link .l { color: var(--accent); }
 .health .stat .l + b { margin-left: 2px; }
@@ -3144,14 +3369,17 @@ a.btn:hover { color: var(--text); }
 .chip.signal.good { color: var(--good); background: var(--good-soft); }
 
 /* Board rows: fit meter, skills line, freshness, sponsorship gate, status. */
-.fitmeter { display: flex; flex-direction: column; gap: 3px; margin-top: 5px; font-size: var(--fs-xs); color: var(--text-dim); }
-.fitmeter-n { font-weight: 650; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1; }
-.fitmeter-bar { display: block; width: 40px; height: 4px; border-radius: var(--r-full); background: var(--chip); overflow: hidden; }
+/* Centred in the grade badge's own 28px column: the score left-aligned under
+   a centred letter, with a 40px bar overhanging both, read as three loose
+   pieces instead of one grade. */
+.fitmeter { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 28px; margin-top: 5px; font-size: var(--fs-xs); color: var(--text-dim); }
+.fitmeter-n { font-weight: 650; color: var(--text-dim); font-variant-numeric: tabular-nums; line-height: 1; }
+.fitmeter-bar { display: block; width: 28px; height: 3px; border-radius: var(--r-full); background: var(--chip); overflow: hidden; }
 .fitmeter-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--text-faint); }
 .fitmeter.strong .fitmeter-bar > i, .fitcard-score.strong .fitmeter-bar > i { background: var(--good); }
 .fitmeter.medium .fitmeter-bar > i, .fitcard-score.medium .fitmeter-bar > i { background: var(--accent); }
 .fitmeter.weak .fitmeter-bar > i, .fitcard-score.weak .fitmeter-bar > i { background: var(--warn); }
-.fitmeter.none { font-style: italic; color: var(--text-faint); }
+.fitmeter.none { font-style: italic; color: var(--text-faint); width: auto; align-items: flex-start; }
 .skillline {
   margin-top: 3px; font-size: var(--fs-sm); color: var(--text-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -3219,6 +3447,12 @@ tr.job { transition: background-color .12s ease; }
 :root { --ws-ease: cubic-bezier(.23, 1, .32, 1); --ws-col-min: 196px; }
 
 .view-head .layoutswitch { flex: none; }
+/* Jobs: the highlighted "Jobs" pill in the top bar already names the view,
+   and the heading + subtitle cost ~68px above the first row on a laptop
+   (audit 2026-11-13). Kept for screen readers as the region's heading. */
+#boardView[data-view="board"] > .view-head {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; margin: 0;
+}
 /* Applications read every search, so the role-search banner is not theirs. */
 #boardView[data-view="applications"] .mode-banner { display: none; }
 /* The Board layout replaces the stage tabs, filters, table and pager. */
@@ -3278,6 +3512,13 @@ tr.job { transition: background-color .12s ease; }
 }
 .ws-col[data-stage="attention"] .ws-count:not(:empty) { background: var(--warn-soft); color: var(--warn-text); }
 .ws-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+/* A column holding 20+ cards scrolls inside itself (audit 2026-11-13): it
+   used to grow ~2,800px and push "After you apply" off the screen, which also
+   made dragging a card between the two bands impossible. Phones keep one
+   long page, where an inner scroller would trap the thumb. */
+@media (min-width: 861px) {
+  .ws-list { max-height: max(240px, calc((100vh - var(--topbar-h, 51px) - 220px) / 2)); overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
+}
 .ws-col-empty {
   padding: var(--s3); border: 1px dashed var(--line); border-radius: var(--r-md);
   font-size: var(--fs-sm); color: var(--text-faint); text-align: center; line-height: 1.45;
@@ -3422,3 +3663,229 @@ button.linklike:hover { background: none; text-decoration: underline; }
   #dlgEmail .dlg-foot { flex-wrap: wrap; }
   #dlgEmail .dlg-foot button { flex: 1 1 100%; justify-content: center; }
 }
+
+/* Rewrite suggestions (P1-2). Insertions and deletions are marked by
+   underline and strike-through, not by colour alone. */
+.rw-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 10px; }
+.rw-item { border: 1px solid var(--line-soft); border-radius: var(--r-md); padding: 10px 12px; background: var(--surface); }
+.rw-item.refused { border-style: dashed; }
+.rw-role { font-size: var(--fs-sm); margin-bottom: 4px; }
+.rw-diff { margin: 0 0 6px; line-height: 1.5; }
+.rw-diff ins { text-decoration: underline; text-decoration-thickness: 2px; background: var(--good-soft); color: inherit; }
+.rw-diff del { text-decoration: line-through; background: var(--bad-soft); color: var(--text-dim); }
+.rw-evidence { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: var(--fs-sm); margin-bottom: 6px; }
+.rw-actions button[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
+.rw-decision, .rw-refused { margin: 6px 0 0; font-size: var(--fs-sm); }
+.rw-refused { color: var(--text-dim); }
+
+/* Refine requests and document versions (P2-2). */
+.rw-refine { margin: 8px 0; display: grid; gap: 4px; }
+.rw-ask { min-width: 0; flex: 1 1 auto; }
+.rw-declined { font-size: var(--fs-sm); color: var(--text-dim); margin: 2px 0 0; }
+.ver-list { margin: 4px 0 8px; padding-left: 20px; display: grid; gap: 4px; }
+.ver-diff { margin-top: 8px; }
+
+/* Email replies (P1-7). */
+.inbox-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; }
+.inbox-item { border: 1px solid var(--line-soft); border-radius: var(--r-md); padding: 10px 12px; display: grid; gap: 4px; }
+.inbox-evidence { margin: 4px 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--text-dim); }
+.inbox-draft { display: grid; gap: 6px; }
+.inbox-draft-text { width: 100%; font: inherit; }
+.inbox-gaps { margin: 0; padding-left: 18px; }
+
+/* What gets interviews (P2-9). */
+.ws-conversion { margin-top: 8px; }
+.ws-conv-table { margin: 6px 0; }
+.ws-conv-table caption { text-align: left; font-weight: 600; padding: 4px 0; }
+.ws-conv-table th { text-align: left; font-weight: 500; padding-right: 12px; }
+
+/* ── Your materials: master cover letter, a job's letter, resume comparison ──
+   Built from the dialog system above (tokens only, so both themes follow).
+   The letter is the subject, set like a page: one comfortable measure, real
+   paragraph spacing, nothing boxed inside a box. Quality, the try-out and
+   history sit in a quiet aside that stacks under the letter on narrow screens. */
+.lt-dialog { width: min(1000px, 96vw); }
+.lt-dialog .dlg-body, .rd-dialog .dlg-body { overflow: auto; min-height: 0; }
+.st-warn { color: var(--warn-text); }
+
+.lt-bar {
+  display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
+  padding: var(--s1) 0 var(--s3); border-bottom: 1px solid var(--line-soft); margin-bottom: var(--s4);
+}
+.lt-bar-meta { flex: 1 1 220px; min-width: 0; }
+.lt-bar-name { font-weight: 650; font-size: var(--fs-lg); }
+.lt-bar-facts { font-size: var(--fs-sm); color: var(--text-dim); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.lt-bar-actions { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+
+.lt-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: var(--s5); align-items: start; }
+.lt-main { min-width: 0; }
+.lt-aside { display: flex; flex-direction: column; gap: var(--s4); position: sticky; top: 0; }
+@media (max-width: 860px) {
+  .lt-layout { grid-template-columns: minmax(0, 1fr); }
+  .lt-aside { position: static; }
+}
+
+/* The letter, set like a page. */
+.lt-paper {
+  max-width: 68ch; font-size: var(--fs-lg); line-height: 1.7; color: var(--text);
+  text-wrap: pretty; overflow-wrap: anywhere;
+}
+.lt-paper p { margin: 0 0 1.05em; }
+.lt-paper p:last-child { margin-bottom: 0; }
+.lt-token {
+  display: inline-block; padding: 0 7px; margin: 0 1px; line-height: 1.5;
+  border-radius: var(--r-full); font-size: var(--fs-sm); font-weight: 600;
+  color: var(--accent); background: var(--accent-soft);
+}
+.lt-prompt {
+  color: var(--warn-text); background: var(--warn-soft); border-radius: var(--r-xs);
+  padding: 0 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone;
+}
+
+/* Editing: the same measure as reading, so nothing jumps between the two. */
+.lt-editor { display: flex; flex-direction: column; gap: var(--s2); }
+.lt-tools { display: flex; align-items: center; gap: var(--s1); font-size: var(--fs-sm); }
+.lt-tools .faint { margin-right: var(--s1); }
+dialog textarea.lt-textarea {
+  min-height: 46vh; resize: vertical; margin: 0;
+  font-size: var(--fs-lg); line-height: 1.65; padding: var(--s3) var(--s4);
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+dialog textarea.lt-textarea:focus-visible {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+dialog textarea.lt-textarea[readonly] { color: var(--text-dim); }
+.lt-edit-foot { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; padding-top: var(--s1); font-variant-numeric: tabular-nums; }
+#dlgJobLetter .lt-main { display: flex; flex-direction: column; gap: var(--s2); }
+
+/* Quality: a label, the facts, then only what is worth a look. */
+.lt-quality { display: flex; flex-direction: column; gap: var(--s2); }
+.lt-q-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }
+.lt-q-title { font-weight: 650; font-size: var(--fs-md); }
+.lt-q-facts { margin: 0; font-size: var(--fs-sm); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.lt-q-ok { margin: 0; font-size: var(--fs-sm); color: var(--text-dim); }
+.lt-issues { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.lt-issue { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); line-height: 1.45; color: var(--text); }
+.lt-issue-level { font-size: var(--fs-xs); color: var(--text-faint); font-weight: 650; }
+.lt-issue.is-block .lt-issue-level { color: var(--bad); }
+.lt-issue.is-warn .lt-issue-level { color: var(--warn-text); }
+.lt-quality + .lt-side-sec, .lt-side-sec + .lt-side-sec, #letterQuality + .lt-side-sec, #jobLetterQuality + .lt-side-sec {
+  border-top: 1px solid var(--line-soft); padding-top: var(--s4);
+}
+.lt-side-sec > h3 { margin: 0 0 var(--s2); font-size: var(--fs-md); }
+.lt-side-sec > p { margin: 0 0 var(--s2); font-size: var(--fs-sm); line-height: 1.45; }
+.lt-try { display: flex; gap: var(--s2); }
+.lt-try select { flex: 1 1 auto; min-width: 0; }
+
+/* History: whole rows are the target. */
+.lt-versions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.lt-version-btn {
+  width: 100%; display: flex; justify-content: space-between; gap: var(--s2);
+  padding: 7px var(--s2); min-height: 36px; border-radius: var(--r-sm);
+  background: transparent; border: 1px solid transparent; color: var(--text); font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums; text-align: left;
+}
+.lt-version-btn:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.lt-version-btn[aria-current="true"] { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.lt-v-words { color: var(--text-faint); flex: none; }
+
+.lt-banner {
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+  padding: var(--s2) var(--s3); margin-bottom: var(--s4); border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--text) 4%, transparent); border: 1px solid var(--line-soft);
+  font-size: var(--fs-sm);
+}
+.lt-version .lt-quality { margin-top: var(--s5); padding-top: var(--s4); border-top: 1px solid var(--line-soft); }
+
+/* Empty: one sentence of why, then three ways in. */
+.lt-empty { max-width: 56ch; margin: var(--s6) auto; text-align: center; padding: 0 var(--s2); }
+.lt-empty h3 { margin: 0 0 var(--s2); font-size: var(--fs-xl); }
+.lt-empty p { margin: 0 0 var(--s4); color: var(--text-dim); line-height: 1.6; text-wrap: pretty; }
+.lt-empty-actions { display: flex; gap: var(--s2); justify-content: center; flex-wrap: wrap; margin-bottom: var(--s3); }
+.lt-empty-note { font-size: var(--fs-sm); }
+
+/* A job's letter in the detail rail. */
+.cl-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.cl-head h3 { margin-right: auto; }
+
+/* ── master vs tailored resume ── */
+.rd-dialog { width: min(980px, 96vw); }
+.rd-stats { display: flex; flex-wrap: wrap; gap: var(--s5); margin: 0 0 var(--s4); }
+.rd-stat { display: flex; flex-direction: column-reverse; }
+.rd-stat dt { font-size: var(--fs-sm); color: var(--text-dim); }
+.rd-stat dd { margin: 0; font-size: var(--fs-2xl); font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.rd-stat.is-omitted dd { color: var(--warn-text); }
+.rd-call { margin-bottom: var(--s4); }
+.rd-filter { margin-bottom: var(--s3); }
+.rd-list { list-style: none; margin: 0; padding: 0; }
+.rd-section {
+  font-size: var(--fs-xs); font-weight: 650; color: var(--text-faint); letter-spacing: .04em;
+  padding: var(--s4) 0 var(--s1);
+}
+.rd-row {
+  display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: var(--s3); align-items: start;
+  padding: var(--s2) 0; border-top: 1px solid var(--line-soft); font-size: var(--fs-md); line-height: 1.5;
+}
+.rd-tag { font-size: var(--fs-xs); font-weight: 650; color: var(--text-faint); padding-top: 2px; }
+.rd-row.is-omitted .rd-tag { color: var(--warn-text); }
+.rd-row.is-added .rd-tag, .rd-row.is-reworded .rd-tag { color: var(--accent); }
+.rd-row.is-same .rd-text { color: var(--text-dim); }
+.rd-row.is-omitted .rd-text > span:first-child { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--warn) 60%, transparent); }
+.rd-row.is-omitted.is-kept .rd-text > span:first-child { text-decoration: none; }
+.rd-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.rd-text del { color: var(--text-faint); }
+.rd-text ins { text-decoration: none; }
+.rd-why { font-size: var(--fs-sm); color: var(--text-dim); }
+.rd-flags { display: flex; flex-wrap: wrap; gap: 4px; }
+.rd-keep { min-width: 64px; justify-content: center; }
+.rd-empty { padding: var(--s4) 0; }
+@media (max-width: 560px) {
+  .rd-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .rd-tag { grid-column: 1 / -1; padding-top: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  dialog textarea.lt-textarea { transition: none; }
+}
+
+/* Phones: the header menus anchor to the right edge of the whole actions
+   group, not to their small icon button, so a 300px menu never runs off the
+   left of a 390px screen. */
+@media (max-width: 720px) {
+  .actions-group { position: relative; }
+  .actions-group > .utilmenu { position: static; }
+  .actions-group > .utilmenu > .menu-pop {
+    right: 0; left: auto; width: min(320px, calc(100vw - 24px)); min-width: 0;
+  }
+}
+/* Touch-only devices have no keyboard to need shortcuts for. */
+@media (hover: none) and (pointer: coarse) {
+  #accountMenu [data-action="open-keys"] { display: none; }
+}
+
+/* ── command palette (⌘K) ──
+   Top-anchored like Raycast and Linear, so results grow downward without the
+   box jumping. No entrance animation: opened many times a day, it must feel
+   instant, and keyboard-initiated UI never animates. */
+dialog.palette {
+  width: min(640px, calc(100vw - 32px)); max-height: min(520px, 70vh); margin: 12vh auto auto; padding: 0;
+  border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-lg);
+  background: var(--surface); color: var(--text); overflow: hidden;
+}
+dialog.palette[open] { animation: none; display: flex; }
+dialog.palette::backdrop { background: rgba(5, 8, 14, .45); }
+.pal-panel { display: flex; flex-direction: column; width: 100%; min-height: 0; }
+.pal-input {
+  font: inherit; font-size: var(--fs-lg, 15px); padding: 14px 16px; border: 0; border-bottom: 1px solid var(--line);
+  background: transparent; color: var(--text); outline: none; border-radius: 0;
+}
+.pal-list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+.pal-group { padding: 8px 10px 4px; font-size: var(--fs-xs); font-weight: 600; color: var(--text-faint); }
+.pal-item {
+  display: flex; align-items: baseline; gap: 10px; padding: 8px 10px; border-radius: var(--r-sm);
+  cursor: pointer; font-size: var(--fs-md);
+}
+.pal-item[aria-selected="true"] { background: var(--accent-soft); color: var(--text); }
+.pal-detail { color: var(--text-dim); font-size: var(--fs-sm); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pal-empty { padding: 14px 10px; color: var(--text-dim); font-size: var(--fs-md); }
+.pal-foot { margin: 0; padding: 8px 14px; border-top: 1px solid var(--line-soft); font-size: var(--fs-xs); }

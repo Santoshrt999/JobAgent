@@ -15,6 +15,7 @@ import { isAbsolute, join } from 'node:path';
 
 import { normalizeJob, parseCsv } from '../normalize.js';
 import { fetchUrl } from './genericPublicPage.js';
+import { safeFetch } from '../../utils/safeFetch.js';
 
 export const adapterId = 'manualUrls';
 
@@ -49,7 +50,7 @@ const CSV_FIELD_MAP = {
  * @returns {Promise<{ jobs: object[], errors: Array<object> }>}
  */
 export async function run(source = {}, ctx = {}) {
-  const { fetchImpl = fetch, rateLimiter, readFileImpl = readFileSync, root = process.cwd(), maxRetries = 3 } = ctx;
+  const { fetchImpl = safeFetch, rateLimiter, readFileImpl = readFileSync, root = process.cwd(), maxRetries = 3 } = ctx;
   const jobs = [];
   const errors = [];
 

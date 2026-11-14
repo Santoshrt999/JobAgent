@@ -573,8 +573,9 @@ describe('section-tab views: counts always equal what the board shows', () => {
     expect(s.views.ready_apply).toBe(2);   // approved + ready_for_submit
     expect(s.views.blocked).toBe(1);
     expect(s.views.submitted).toBe(1);
-    // "all" excludes the closed (rejected + discarded) jobs — 9 seeded, 2 closed.
-    expect(s.views.all).toBe(7);
+    // "all" excludes the closed (rejected + discarded) jobs and the one already
+    // submitted (BUG-08: Jobs is for deciding what to apply to next) — 9 seeded.
+    expect(s.views.all).toBe(6);
   });
 
   it('the Ready-to-apply view returns approved AND ready_for_submit (the old 19-vs-0 bug)', () => {

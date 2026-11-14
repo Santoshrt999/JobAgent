@@ -346,7 +346,7 @@ describe('HTTP API', () => {
   it('serves the workspace and records outcomes and follow-ups', async () => {
     const ws = await get('/api/applications');
     expect(ws.status).toBe(200);
-    expect(Object.keys(ws.body).sort()).toEqual(['generatedAt', 'items', 'metrics', 'stages', 'today', 'weekly']);
+    expect(Object.keys(ws.body).sort()).toEqual(['conversion', 'generatedAt', 'items', 'metrics', 'signInGroups', 'stages', 'today', 'weekly']);
 
     const ok = await post('/api/jobs/sub1/outcome', { outcome: 'interviewing', on: '2026-10-10' });
     expect(ok.status).toBe(200);

@@ -15,6 +15,7 @@
 import { FRESHNESS_WINDOW_DAYS } from '../utils/credentialManager.js';
 import { enrichmentBacklog, enrichmentSettings, FETCHABLE_SOURCES } from '../search/enrich.js';
 import { RETENTION_RANGE } from '../config/userSettings.js';
+import { activeJobCount, cachedForData } from './data.js';
 
 /**
  * Discard categories, keyed by the reason's prefix. `action` says what the
@@ -171,24 +172,36 @@ export function dataQualitySummary(db, config, { now = new Date(), enrichmentSta
   };
   if (!raw?.prepare) return out;
 
-  for (const r of raw.prepare(`SELECT status, COUNT(*) AS n FROM jobs
-      WHERE discovery_mode = 'profile' GROUP BY status`).all()) {
-    out.board.total += r.n;
-    if (r.status === 'scored') out.board.scored += r.n;
-    if (r.status === 'needs_description') out.board.needsDescription += r.n;
-    if (r.status === 'unknown_date_review') out.board.dateReview += r.n;
-  }
-  out.board.active = out.board.scored + out.board.needsDescription;
-
-  const byCategory = new Map();
-  for (const r of raw.prepare(`SELECT discard_reason AS reason, COUNT(*) AS n FROM jobs
-      WHERE discovery_mode = 'profile' AND status = 'discarded' GROUP BY discard_reason`).all()) {
-    const key = discardCategory(r.reason);
-    byCategory.set(key, (byCategory.get(key) ?? 0) + r.n);
-  }
-  out.filtered = [...byCategory.entries()]
-    .map(([key, count]) => ({ key, count, ...categoryInfo(key) }))
-    .sort((a, b) => b.count - a.count);
+  // Both groupings scan the whole table (the discarded one ~165k rows on a
+  // real store, measured 331-338 ms of blocked event loop per dialog open), so
+  // they are memoized on the shared data key and recomputed only after a write.
+  const counts = cachedForData(db, 'dataQuality', now, () => {
+    const board = { scored: 0, needsDescription: 0, dateReview: 0, total: 0 };
+    for (const r of raw.prepare(`SELECT status, COUNT(*) AS n FROM jobs
+        WHERE discovery_mode = 'profile' GROUP BY status`).all()) {
+      board.total += r.n;
+      if (r.status === 'scored') board.scored += r.n;
+      if (r.status === 'needs_description') board.needsDescription += r.n;
+      if (r.status === 'unknown_date_review') board.dateReview += r.n;
+    }
+    const byCategory = new Map();
+    for (const r of raw.prepare(`SELECT discard_reason AS reason, COUNT(*) AS n FROM jobs
+        WHERE discovery_mode = 'profile' AND status = 'discarded' GROUP BY discard_reason`).all()) {
+      const key = discardCategory(r.reason);
+      byCategory.set(key, (byCategory.get(key) ?? 0) + r.n);
+    }
+    const filtered = [...byCategory.entries()]
+      .map(([key, count]) => ({ key, count, ...categoryInfo(key) }))
+      .sort((a, b) => b.count - a.count);
+    return { board, filtered };
+  });
+  out.board = { ...out.board, ...counts.board };
+  // "Active" is the Jobs list's own "All jobs" count. Summing raw `scored` and
+  // `needs_description` rows counted jobs you rejected or archived (their
+  // status column stays `scored`) and missed prepared or in-progress ones, so
+  // the two screens disagreed (BUG-10).
+  out.board.active = activeJobCount(db, now);
+  out.filtered = counts.filtered.map((f) => ({ ...f }));
 
   out.enrichment.backlog = enrichmentBacklog(db, config, { now });
   out.sourceProblems = sourceProblems(raw);

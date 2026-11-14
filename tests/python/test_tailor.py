@@ -837,9 +837,25 @@ def test_page_estimate_tracks_real_word_pagination(tmp_path, humanizer_patterns)
         {"company": "Example", "title": "Data Engineer", "jd_text": "Required: SQL and Python."},
         keywords=["sql", "python"], patterns=humanizer_patterns, max_pages=2,
     )
-    assert result["invariants"]["within_page_budget"] is True
-    assert result["invariants"]["estimated_pages"] <= 2
+    # The unrelated older role is thinned first, down to its floor (two for the
+    # two newest roles). The current
+    # role's thirty bullets all evidence a REQUIRED skill, so they are kept and
+    # the résumé is reported as long rather than silently stripped of them.
+    texts = [p.text for p in Document(result["output_path"]).paragraphs]
+    assert all(f"outcome number {i}. " in " ".join(texts) for i in range(30))
+    assert sum("unrelated legacy report" in t for t in texts) == 2  # 2nd-newest role keeps two
     assert result["invariants"]["roles_without_detail"] == []
+    assert any("kept on purpose" in note for note in result["limitations"])
+
+    # Without that required evidence the same résumé IS brought within budget.
+    relaxed = tailor_resume(
+        master, tmp_path / "out3",
+        {"company": "Example", "title": "Data Engineer", "jd_text": "Nice to have: Kafka."},
+        keywords=["kafka"], patterns=humanizer_patterns, max_pages=2,
+    )
+    assert relaxed["invariants"]["within_page_budget"] is True
+    assert relaxed["invariants"]["estimated_pages"] <= 2
+    assert relaxed["invariants"]["roles_without_detail"] == []
 
 
 def test_a_resume_that_already_fits_is_left_alone(tmp_path, humanizer_patterns):

@@ -193,7 +193,9 @@ describe('Chromium extension assisted-fill E2E', () => {
         } },
         tabs: {
           query: async () => [{ id: 7, url: `http://127.0.0.1:4646/#job=${encodeURIComponent(selected)}` }],
-          update: async (_id, patch) => { globalThis.__updatedUrl = patch.url; },
+          // The dashboard tab must stay where it is: the posting opens in a new tab.
+          update: async () => { globalThis.__dashboardReplaced = true; },
+          create: async (props) => { globalThis.__updatedUrl = props.url; },
         },
       };
       globalThis.fetch = async () => ({
@@ -207,6 +209,7 @@ describe('Chromium extension assisted-fill E2E', () => {
     expect(await page.textContent('#fill')).toBe('Open application');
     await page.click('#fill');
     await expect.poll(() => page.evaluate(() => globalThis.__updatedUrl)).toBe('https://careers.acme.test/jobs/123');
+    expect(await page.evaluate(() => globalThis.__dashboardReplaced ?? false)).toBe(false);
     // Only the top frame, the job's own host and known ATS embeds get the payload.
     const frames = await page.evaluate(() => globalThis.__jobAgentPopup.selectFillFrames([
       { frameId: 0, result: 'careers.acme.test' },

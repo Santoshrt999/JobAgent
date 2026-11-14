@@ -13,56 +13,85 @@
  *   - Responses are cached on disk by content hash so re-preparing the same job
  *     is free and does not re-bill the account.
  *
- * Provider is configurable; the shipped default targets NVIDIA's
- * OpenAI-compatible endpoint. No provider SDK is required.
+ * Providers (P1-1, src/llm/providers.js): any OpenAI-compatible server (the
+ * shipped default targets NVIDIA's endpoint), Anthropic, and the local Ollama
+ * and LM Studio servers. LLM_PROVIDER picks one; with it unset nothing changes
+ * for an existing OpenAI-compatible setup.
  */
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { writeFileAtomic } from '../utils/fsSafe.js';
-import { withRetry } from '../utils/retryHandler.js';
+import { callProvider, PROVIDER_NAMES, retryAfterToMs } from './providers.js';
+
+export { retryAfterToMs };
 
 /** Default provider endpoint (OpenAI-compatible /chat/completions). */
 export const DEFAULT_BASE_URL = 'https://integrate.api.nvidia.com/v1';
-/** Default model. */
+/** Default model for the default endpoint. */
 export const DEFAULT_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b';
-/** Hard wall-clock ceiling for one call. */
-const DEFAULT_TIMEOUT_MS = 30_000;
-/** Retries after the first attempt for 429 / 5xx / transient network errors. */
-const MAX_RETRIES = 2;
-/** Longest Retry-After we will honour (a provider asking for minutes is a failure). */
-const MAX_RETRY_DELAY_MS = 10_000;
-/** Never send more JD text than this (cost + latency ceiling). */
-const MAX_INPUT_CHARS = 24_000;
+/** Default Claude model when LLM_PROVIDER=anthropic and LLM_MODEL is unset. */
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5-5';
+/** Hard wall-clock ceiling for one call, per provider kind. */
+const DEFAULT_TIMEOUT_MS = { openai: 30_000, anthropic: 120_000, ollama: 180_000, lmstudio: 180_000 };
+/** Local servers' usual addresses. */
+const LOCAL_BASE_URL = { ollama: 'http://localhost:11434', lmstudio: 'http://localhost:1234/v1' };
+/** Never send more input text than this (cost + latency ceiling). */
+export const MAX_INPUT_CHARS = 24_000;
 
 /**
  * Resolve LLM assist settings from the environment.
  *
+ *   LLM_ASSIST     on | off (default off: every LLM feature is opt-in)
+ *   LLM_PROVIDER   openai (default) | anthropic | ollama | lmstudio
+ *   LLM_MODEL      required for ollama and lmstudio; defaults exist for the others
+ *   LLM_BASE_URL   override the endpoint
+ *   LLM_API_KEY    key for any hosted provider; NVIDIA_API_KEY (openai) and
+ *                  ANTHROPIC_API_KEY (anthropic) also work. Local servers need none.
+ *   LLM_TIMEOUT_MS, LLM_JSON_MODE=schema (openai: ask for JSON-schema output)
+ *
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {{
- *   enabled: boolean, reason: string|null, apiKey: string,
- *   baseUrl: string, model: string, timeoutMs: number, cacheDir: string|null
+ *   enabled: boolean, reason: string|null, provider: string, apiKey: string,
+ *   baseUrl: string, model: string, timeoutMs: number, jsonMode: string,
+ *   cacheDir: string|null, usageLog: string|null
  * }}
  */
 export function llmSettings(env = process.env, { root = null } = {}) {
   const flag = String(env.LLM_ASSIST ?? '').trim().toLowerCase();
-  const apiKey = String(env.NVIDIA_API_KEY ?? env.LLM_API_KEY ?? '').trim();
   const on = ['1', 'on', 'true', 'yes', 'enabled'].includes(flag);
+  const provider = String(env.LLM_PROVIDER ?? 'openai').trim().toLowerCase() || 'openai';
+  const local = provider === 'ollama' || provider === 'lmstudio';
+  const apiKey = String(
+    provider === 'anthropic'
+      ? (env.ANTHROPIC_API_KEY ?? env.LLM_API_KEY ?? '')
+      : local ? (env.LLM_API_KEY ?? '') : (env.NVIDIA_API_KEY ?? env.LLM_API_KEY ?? ''),
+  ).trim();
+  const defaultModel = provider === 'anthropic' ? DEFAULT_ANTHROPIC_MODEL : provider === 'openai' ? DEFAULT_MODEL : '';
+  const model = String(env.LLM_MODEL ?? defaultModel).trim();
+  const baseUrl = String(env.LLM_BASE_URL ?? (provider === 'openai' ? DEFAULT_BASE_URL : LOCAL_BASE_URL[provider] ?? ''))
+    .replace(/\/+$/, '');
 
   let reason = null;
   if (!on) reason = 'LLM_ASSIST is not enabled (set LLM_ASSIST=on in .env)';
-  else if (!apiKey) reason = 'no API key found (set NVIDIA_API_KEY in .env)';
+  else if (!PROVIDER_NAMES.includes(provider)) reason = `unknown LLM_PROVIDER "${provider}" (use openai, anthropic, ollama or lmstudio)`;
+  else if (!local && !apiKey) {
+    reason = provider === 'anthropic' ? 'no API key found (set ANTHROPIC_API_KEY in .env)' : 'no API key found (set NVIDIA_API_KEY or LLM_API_KEY in .env)';
+  } else if (!model) reason = `set LLM_MODEL to the ${provider} model to use`;
 
   return {
-    enabled: on && Boolean(apiKey),
+    enabled: reason === null,
     reason,
+    provider,
     apiKey,
-    baseUrl: String(env.LLM_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, ''),
-    model: String(env.LLM_MODEL ?? DEFAULT_MODEL),
-    timeoutMs: Number(env.LLM_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
-    cacheDir: root ? join(root, '.tmp', 'llm-cache') : null,
+    baseUrl,
+    model,
+    timeoutMs: Number(env.LLM_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS[provider] ?? 30_000) || 30_000,
+    jsonMode: String(env.LLM_JSON_MODE ?? '').toLowerCase(),
+    cacheDir: root && env.LLM_CACHE !== 'off' ? join(root, '.tmp', 'llm-cache') : null,
+    usageLog: root ? join(root, 'logs', 'llm-usage.jsonl') : null,
   };
 }
 
@@ -72,22 +101,24 @@ export function llmSettings(env = process.env, { root = null } = {}) {
  * The separator is U+0000 written as the `\u0000` ESCAPE. It used to be two
  * literal NUL bytes in the source, which made git treat this file as binary
  * (no diffs, no blame). The escape hashes to the same bytes, so existing
- * cache entries remain valid.
+ * cache entries remain valid. Non-default providers and task versions are
+ * folded in, so changing either never serves a stale answer.
  */
-function cacheKey({ model, system, user }) {
+export function cacheKey({ model, system, user, provider = 'openai', task = '' }) {
+  const prefix = provider === 'openai' && !task ? '' : `${provider}\u0000${task}\u0000`;
   return createHash('sha256')
-    .update(`${model}\u0000${system}\u0000${user}`)
+    .update(`${prefix}${model}\u0000${system}\u0000${user}`)
     .digest('hex')
     .slice(0, 32);
 }
 
-function readCache(dir, key) {
+export function readCache(dir, key) {
   if (!dir) return null;
   try { return JSON.parse(readFileSync(join(dir, `${key}.json`), 'utf8')); }
   catch { return null; }
 }
 
-function writeCache(dir, key, value) {
+export function writeCache(dir, key, value) {
   if (!dir) return;
   try {
     mkdirSync(dir, { recursive: true });
@@ -96,7 +127,29 @@ function writeCache(dir, key, value) {
 }
 
 /**
- * Ask the model for a JSON object.
+ * Append one line to logs/llm-usage.jsonl: which task, provider and model, how
+ * many tokens, cached or not. Never the prompt or the answer.
+ */
+export function logUsage(cfg, entry) {
+  if (!cfg?.usageLog) return;
+  try {
+    mkdirSync(join(cfg.usageLog, '..'), { recursive: true });
+    appendFileSync(cfg.usageLog, `${JSON.stringify({ at: new Date().toISOString(), provider: cfg.provider, model: cfg.model, ...entry })}\n`);
+  } catch { /* usage logging is best-effort */ }
+}
+
+/** A provider error as a short, key-free message. */
+export function providerErrorMessage(err) {
+  const message = String(err?.message ?? err);
+  if (typeof err?.status === 'number' || /^(timed out|could not read provider response|the model declined|the reply was cut off|the Anthropic provider needs)/.test(message)) {
+    return message;
+  }
+  return `request failed: ${message}`;
+}
+
+/**
+ * Ask the model for a JSON object (no schema). Kept for callers that predate
+ * runTask (src/llm/task.js), which adds schema validation and a repair turn.
  *
  * @param {object} args
  * @param {string} args.system system prompt
@@ -115,103 +168,25 @@ export async function completeJson({
   if (!cfg.enabled) return fail(cfg.reason ?? 'LLM assist disabled');
 
   const prompt = String(user ?? '').slice(0, MAX_INPUT_CHARS);
-  const key = cacheKey({ model: cfg.model, system, user: prompt });
+  const key = cacheKey({ model: cfg.model, system, user: prompt, provider: cfg.provider ?? 'openai' });
   const hit = readCache(cfg.cacheDir, key);
   if (hit) return { ok: true, data: hit, error: null, cached: true, model: cfg.model };
 
-  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== 'function') return fail('no fetch implementation available');
-
-  const body = JSON.stringify({
-    model: cfg.model,
-    // Deterministic: the same JD must yield the same requirements, or the
-    // audit trail on a re-prepared resume becomes meaningless.
-    temperature: 0,
-    max_tokens: maxTokens,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: prompt },
-    ],
-  });
-
-  // One attempt = request AND body. The timer used to be cleared as soon as
-  // headers arrived, so a provider that sent headers and then stalled the
-  // body hung `response.json()` with no limit at all.
-  const attempt = async () => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
-    try {
-      const response = await fetchImpl(`${cfg.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${cfg.apiKey}`,
-        },
-        body,
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        // Never leak the key or full provider payload into a packet/log.
-        const err = new Error(`provider returned HTTP ${response.status}`);
-        err.status = response.status;
-        const retryAfterMs = retryAfterToMs(response.headers?.get?.('retry-after'));
-        if (retryAfterMs !== null) err.retryAfterMs = retryAfterMs;
-        throw err;
-      }
-      let payload;
-      try {
-        payload = await response.json();
-      } catch (err) {
-        if (err?.name === 'AbortError') throw err;
-        const wrapped = new Error(`could not read provider response: ${err.message}`);
-        wrapped.retryable = false;
-        throw wrapped;
-      }
-      return payload?.choices?.[0]?.message?.content ?? '';
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-
-  let text;
+  let reply;
   try {
-    // Bounded retries for 429 / 5xx / transient network errors only (see
-    // defaultIsRetryable), honouring Retry-After up to MAX_RETRY_DELAY_MS.
-    // A timeout is not retried: it already cost the full budget once.
-    text = await withRetry(attempt, {
-      maxRetries: deps.maxRetries ?? MAX_RETRIES,
-      baseDelayMs: 500,
-      maxDelayMs: MAX_RETRY_DELAY_MS,
-      ...(deps.sleepFn ? { sleepFn: deps.sleepFn } : {}),
-    });
+    reply = await callProvider({
+      cfg: { provider: 'openai', ...cfg }, system, messages: [{ role: 'user', content: prompt }], maxTokens,
+    }, deps);
   } catch (err) {
-    if (err?.name === 'AbortError') return fail(`timed out after ${cfg.timeoutMs}ms`);
-    if (typeof err?.status === 'number' || /^could not read provider response/.test(err?.message ?? '')) {
-      return fail(err.message);
-    }
-    return fail(`request failed: ${err?.message ?? err}`);
+    return fail(providerErrorMessage(err));
   }
 
-  const parsed = parseJsonObject(text);
+  const parsed = parseJsonObject(reply.text);
   if (!parsed) return fail('provider did not return parseable JSON');
 
   writeCache(cfg.cacheDir, key, parsed);
+  logUsage(cfg, { task: 'json', ...reply.usage, cached: false });
   return { ok: true, data: parsed, error: null, cached: false, model: cfg.model };
-}
-
-/**
- * Retry-After header -> milliseconds (delta-seconds or HTTP-date), or null.
- * @param {string|null|undefined} value
- * @param {number} [now]
- * @returns {number|null}
- */
-export function retryAfterToMs(value, now = Date.now()) {
-  const raw = String(value ?? '').trim();
-  if (!raw) return null;
-  if (/^\d+(?:\.\d+)?$/.test(raw)) return Math.round(Number(raw) * 1000);
-  const at = Date.parse(raw);
-  return Number.isFinite(at) ? Math.max(0, at - now) : null;
 }
 
 /**

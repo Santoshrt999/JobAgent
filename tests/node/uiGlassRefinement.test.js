@@ -76,19 +76,32 @@ describe('the bulk-action bar keeps every safeguard', () => {
     expect(js('actions.js')).toMatch(/'batch-autofill', 'batch-prepare', 'batch-approve', 'batch-decide', 'compare'/);
   });
 
-  it('docks on the table header with no layout shift, and floats above the thumb on phones', () => {
+  it('is a toolbar docked above the column headers while rows are ticked, and above the thumb on phones', () => {
+    // Above the table, sticking under the top bar; the headers stick beneath
+    // it while it is open, so names and sorting stay visible (audit
+    // 2026-11-13: floating over the rows it blended into them). It takes no
+    // room at rest; opening it scrolls the page so the clicked row stays put.
     const board = html.slice(html.indexOf('id="boardwrap"'), html.indexOf('<table id="board"'));
     expect(board).toContain('<div id="selbar" role="toolbar"');
-    expect(css).toMatch(/#selbar \{\s*position: sticky; top: var\(--topbar-h, 51px\); z-index: 4; height: 0;/);
+    expect(board).not.toContain('selbar-idle');
+    expect(css).toMatch(/#selbar \{\s*position: sticky; top: var\(--topbar-h, 51px\); z-index: 4;\s*height: 0; overflow: hidden;/);
+    expect(css).toMatch(/#selbar\[data-open="true"\] \{\s*height: var\(--tbar-h\);/);
+    expect(css).toContain('#boardwrap:has(#selbar[data-open="true"]) thead th { top: calc(var(--topbar-h, 51px) + var(--tbar-h)); }');
     expect(css).toMatch(/thead th \{[^}]*height: 40px/);
-    expect(css).toMatch(/@media \(max-width: 860px\) \{\s*#selbar \{\s*position: fixed;/);
+    expect(js('selection.js')).toContain('keepRowStill(() => { bar.dataset.open = open; })');
+    // The pipeline is one stepper, in the order the work happens.
+    const pipeline = bar.slice(bar.indexOf('selbar-pipeline'));
+    expect(pipeline.indexOf('batch-prepare')).toBeLessThan(pipeline.indexOf('batch-approve'));
+    expect(pipeline.indexOf('batch-approve')).toBeLessThan(pipeline.indexOf('batch-autofill'));
+    expect(css).toMatch(/@media \(max-width: 860px\) \{\s*#selbar, #selbar\[data-open="true"\] \{\s*position: fixed;/);
     expect(css).toContain('body:has(#selbar[data-open="true"]) .layout { padding-bottom: 84px; }');
   });
 
-  it('never lets its closed wrapper intercept taps meant for the page beneath', () => {
-    const wrapper = css.slice(css.indexOf('#selbar {\n  position: sticky'), css.indexOf('}', css.indexOf('#selbar {\n  position: sticky')));
-    expect(wrapper).toContain('pointer-events: none;');
+  it('keeps the actions inert until something is selected, and the phone wrapper out of the way', () => {
+    expect(css).toMatch(/#selbar \.selbar-inner \{[^}]*visibility: hidden; transform: translateY\(-2px\); pointer-events: none;/);
     expect(css).toMatch(/#selbar\[data-open="true"\] \.selbar-inner \{[^}]*pointer-events: auto;/);
+    const phone = css.slice(css.indexOf('#selbar, #selbar[data-open="true"] {'));
+    expect(phone.slice(0, phone.indexOf('}'))).toContain('pointer-events: none;');
   });
 
   it('folds secondary actions into an overflow menu when the bar is narrow', () => {
@@ -122,7 +135,8 @@ describe('header: three menus and a theme toggle', () => {
     for (const [pop, action] of [['activityMenu', 'toggle-activity-menu'], ['accountMenu', 'toggle-account-menu']]) {
       expect(js('menus.js')).toContain(`${pop}: '${action}'`);
       // The handler toggles its own menu (the Profile one also fetches the profile list on a cold start).
-      expect(js('actions.js')).toMatch(new RegExp(`'${action}': \\(\\) => \\{?\\s*toggleMenu\\(\\$\\('${pop}'\\)\\)`));
+      // (The Activity one first settles which optional tools it lists.)
+      expect(js('actions.js')).toMatch(new RegExp(`'${action}': (?:async )?\\(\\) => \\{?[\\s\\S]{0,400}?toggleMenu\\((?:\\$\\('${pop}'\\)|pop)\\)`));
       expect(header).toContain(`data-action="${action}" aria-haspopup="true"`);
     }
     expect(js('actions.js')).toMatch(/KEEP_MENU_OPEN = \[[\s\S]*'toggle-activity-menu', 'toggle-account-menu', 'toggle-bulk-menu'/);
@@ -138,7 +152,10 @@ describe('header: three menus and a theme toggle', () => {
   });
 
   it('gives the theme button up on small phones, keeping its twin in the menu', () => {
-    expect(css).toMatch(/@media \(max-width: 480px\) \{\s*\.theme-toggle \{ display: none; \}\s*\.only-narrow \{ display: flex !important; \}/);
+    // `.menu-pop .only-narrow`, not `.only-narrow`: the base rule hiding it is
+    // also !important and comes LATER, so an equally specific selector here
+    // lost and the twins never appeared on a phone.
+    expect(css).toMatch(/@media \(max-width: 480px\) \{\s*\.theme-toggle \{ display: none; \}\s*\.menu-pop \.only-narrow \{ display: flex !important; \}/);
   });
 });
 

@@ -4,7 +4,7 @@ import { $, el } from './dom.js';
 import { state } from './state.js';
 import { api, apiOptional } from './api.js';
 import { statusLabel } from './board.js';
-import { fitLabel, markCurrentRow, renderDetail, selectJob } from './detail.js';
+import { fitLabel, markCurrentRow, renderDetail, revealInDetail, syncDetailToList } from './detail.js';
 import { autofillOne, decide, prepareOne, simpleAction } from './mutations.js';
 import { syncSelectionBar } from './selection.js';
 import { openHealth, openProfile } from './profile.js';
@@ -15,6 +15,7 @@ import { renderTabs } from './analytics.js';
 import { freshnessOf } from './format.js';
 import { loadBoard } from './board.js';
 import { applyAppsLayout, openApplicationDetail } from './workspace.js';
+import { signInStrip } from './signin.js';
 
 /* ─────────────────────────── Today ───────────────────────────
  * The landing view: at most ten jobs, each with the ONE next action that
@@ -71,6 +72,8 @@ export function setView(view, { save = true, nav = false } = {}) {
   }
   const changed = state.view !== view;
   state.view = view;
+  // The next list to load decides what the rail shows (syncDetailToList).
+  if (changed) state.syncDetail = true;
   $('todayView').hidden = view !== 'today';
   $('boardView').hidden = view === 'today';
   for (const button of document.querySelectorAll('[data-action="set-view"][aria-pressed]')) {
@@ -84,6 +87,8 @@ export function setView(view, { save = true, nav = false } = {}) {
       state.page = 1;
       renderTabs();
       if (tabChanged) loadBoard();
+      // The rows already on screen are this view's list: sync to them now.
+      else if (state.syncDetail && view === 'board') { state.syncDetail = false; syncDetailToList(state.visible ?? []); }
     }
   }
   applyAppsLayout({ load: view === 'applications' && changed });
@@ -111,6 +116,12 @@ export function loadToday() {
     }
     setSystemNotices(data.systemNotices ?? []);
     renderToday();
+    // Today opens on its first card, so the rail beside it is never blank;
+    // after a view switch, a job Today does not list is not left open.
+    if (state.view === 'today' && (state.syncDetail || !state.selectedId)) {
+      state.syncDetail = false;
+      syncDetailToList((data.items ?? []).map((i) => i.id));
+    }
   })().finally(() => { todayInFlight = null; });
   return todayInFlight;
 }
@@ -182,8 +193,12 @@ export function setSystemNotices(list) {
   }
   state.systemNotices = notices;
   const unavailable = notices.some((n) => n.code === 'browser_unavailable');
-  const changed = unavailable !== state.browserUnavailable;
+  // The template notice gates Prepare, so its items are part of what the open
+  // job shows: a fixed value must drop out of that box, not wait for a click.
+  const templated = JSON.stringify(notices.find((n) => n.code === 'profile_placeholders')?.items ?? null);
+  const changed = unavailable !== state.browserUnavailable || templated !== state.templatedItems;
   state.browserUnavailable = unavailable;
+  state.templatedItems = templated;
   renderNotices();
   renderSetupChecklist();
   if (changed) {
@@ -224,12 +239,39 @@ export function renderNotices() {
       el('span', { class: 'notice-mark', 'aria-hidden': 'true', text: '!' }),
       el('div', { class: 'notice-body' },
         el('b', { text: notice.message }),
-        notice.fix ? fixLine(notice.fix) : null),
+        notice.fix ? fixLine(notice.fix) : null,
+        notice.items?.length ? placeholderList(notice.items) : null),
       NOTICE_ACTION[notice.code] ? el('div', { class: 'notice-actions' },
         ...NOTICE_ACTION[notice.code].map(([action, label], i) => el('button', {
           type: 'button', class: i === 0 ? 'small primary' : 'small', 'data-action': action, text: label,
         }))) : null));
   }
+}
+
+/**
+ * The template-text notice while it blocks Prepare, else null.
+ *
+ * Prepare refuses a profile that still holds template text (preparePacket's
+ * placeholder guard). The click used to start a run that failed in the
+ * background and left only "Prepared 0 packet(s)", so it looked like nothing
+ * happened. Controls read this to stay off and to say what to fix instead.
+ */
+export function prepareBlockedNotice() {
+  return (state.systemNotices ?? []).find((n) => n.code === 'profile_placeholders') ?? null;
+}
+
+/** One line per template value: the field, what it still says, and where to fix it. */
+export function placeholderList(items = []) {
+  const list = el('ul', { class: 'notice-items' });
+  for (const item of items) {
+    list.append(el('li', {},
+      el('b', { text: item.label }),
+      ` still says “${item.value}”. Fix it in `,
+      el('b', { text: item.where }),
+      '.',
+      fixLine(item.how)));
+  }
+  return list;
 }
 
 /** Notice code -> the dialog that resolves it. */
@@ -277,6 +319,8 @@ export function renderToday() {
     return;
   }
 
+  const signin = signInStrip(state.today?.signInGroups ?? []);
+  if (signin) list.append(el('li', { class: 'today-signin' }, signin));
   // Grouped by the KIND of work, in the order it should be done: finishing
   // an application you started beats deciding on a new match, and both beat
   // housekeeping. The server's order is kept inside each group.
@@ -293,7 +337,30 @@ export function renderToday() {
         el('span', { class: 'today-group-hint muted', text: group.hint })),
       inner));
   }
+  const proposals = proposalStrip(state.today?.proposals ?? []);
+  if (proposals) list.append(el('li', { class: 'today-signin' }, proposals));
   markCurrentRow(state.selectedId);
+}
+
+/**
+ * Patterns in what the person turns down (audit Backlog #8): each names its
+ * evidence and offers an existing, undoable action or the setting behind it.
+ */
+export function proposalStrip(proposals = []) {
+  if (!proposals.length) return null;
+  const list = el('ul', { class: 'signin-list' });
+  for (const p of proposals) {
+    const attrs = { type: 'button', class: 'small', 'data-action': p.action, text: p.label };
+    if (p.ids) attrs['data-ids'] = p.ids.join(',');
+    list.append(el('li', { class: 'signin-row' },
+      el('span', { class: 'signin-who', title: p.why ?? '' }, p.message),
+      el('button', attrs)));
+  }
+  return el('section', { class: 'signin-strip proposal-strip', 'aria-label': 'Patterns in what you turn down' },
+    el('div', { class: 'signin-head' },
+      el('h3', { text: 'Patterns in what you turn down' }),
+      el('p', { class: 'muted', text: 'From the reasons you gave. Nothing changes unless you choose it, and archiving can be undone.' })),
+    list);
 }
 
 /** Today's groups, in the order the work should be done. */
@@ -301,6 +368,7 @@ export const TODAY_GROUPS = [
   { key: 'finish', title: 'Finish applications', hint: 'Work you started that is waiting on you', primary: true },
   { key: 'followup', title: 'Follow up', hint: 'Reminders you set on applications you submitted', primary: true },
   { key: 'decide', title: 'Decide on matches', hint: 'Strong and possible fits nobody has decided on', primary: false },
+  { key: 'aging', title: 'Aging', hint: 'Posted over three weeks ago. Still worth it, or archive?', primary: false },
   { key: 'tidy', title: 'Tidy up', hint: 'Closed postings and leftovers', primary: false },
 ];
 
@@ -308,6 +376,7 @@ export const TODAY_GROUPS = [
 export function groupOf(item) {
   const kind = item.nextAction?.kind;
   if (kind === 'archive') return 'tidy';
+  if (item.aging) return 'aging';
   if (kind === 'followup') return 'followup';
   if (['submit', 'answer', 'approve', 'autofill'].includes(kind)) return 'finish';
   // "review" covers both an unverified submit and a match to decide on.
@@ -318,6 +387,9 @@ export function groupOf(item) {
 /** One line under the heading that says what is waiting, by group. */
 export function todaySummary(items) {
   if (!items.length) return 'Nothing is waiting on you.';
+  if (items.every((i) => groupOf(i) === 'aging' || groupOf(i) === 'tidy')) {
+    return `Nothing fresh is waiting on you. ${items.length} older item${items.length === 1 ? '' : 's'} to keep or archive.`;
+  }
   const finish = items.filter((i) => groupOf(i) === 'finish').length;
   const follow = items.filter((i) => groupOf(i) === 'followup').length;
   const decide = items.filter((i) => groupOf(i) === 'decide').length;
@@ -395,6 +467,20 @@ export function todayCard(item, group = TODAY_GROUPS[0]) {
   if (next.kind === 'followup') {
     act.append(el('button', { type: 'button', class: 'small ghost', 'data-action': 'ws-followup', 'data-op': 'done', 'data-id': item.id, text: 'Done' }));
   }
+  // Triage in place: deciding against a match, or retiring an aging one, used
+  // to mean opening the job and finding the button in the rail. Both have Undo.
+  if (group.key === 'decide' && ['scored', 'discovered', 'shortlisted'].includes(item.appStatus)) {
+    act.append(el('button', {
+      type: 'button', class: 'small ghost', 'data-action': 'today-decide', 'data-decision': 'rejected', 'data-id': item.id,
+      'aria-label': `Not for me: ${item.title ?? 'this job'}`, text: 'Not for me',
+    }));
+  }
+  if (group.key === 'aging') {
+    act.append(el('button', {
+      type: 'button', class: 'small ghost', 'data-action': 'today-decide', 'data-decision': 'archived', 'data-id': item.id,
+      'aria-label': `Archive: ${item.title ?? 'this job'}`, text: 'Archive',
+    }));
+  }
   card.append(act);
   return card;
 }
@@ -412,7 +498,7 @@ export async function todayAct(target) {
     // A closed posting: archiving is the whole next step (with the usual Undo).
     case 'archive': await decide(id, 'archived'); break;
     case 'followup': await openApplicationDetail(id); break;
-    default: await selectJob(id, { user: true });
+    default: await revealInDetail(id);
   }
   scheduleTodayReload(600);
 }

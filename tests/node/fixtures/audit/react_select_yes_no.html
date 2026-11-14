@@ -1,0 +1,13 @@
+<!doctype html><html><head><title>Apply</title><style>.select__menu{border:1px solid #999}.select__option{padding:4px;cursor:pointer}</style></head><body><h1>Application</h1>
+<form onsubmit="return false">
+<label for="email">Email</label><input id="email" name="email" type="email">
+<label id="reloc-label" for="reloc">Are you willing to relocate?</label>
+<div class="select__container"><div class="select__control"><div class="select__value-container"><div class="select__single-value" id="sv"></div>
+<input id="reloc" role="combobox" aria-autocomplete="list" aria-labelledby="reloc-label" aria-expanded="false"></div></div><div id="menu"></div></div>
+<button id="go" type="button">Submit application</button>
+</form>
+<script>
+const inp=document.getElementById('reloc'),menu=document.getElementById('menu'),sv=document.getElementById('sv');
+function open(){const q=inp.value.toLowerCase();menu.className='select__menu';menu.innerHTML='';['Yes','No'].filter(o=>!q||o.toLowerCase().startsWith(q)).forEach(o=>{const d=document.createElement('div');d.className='select__option';d.setAttribute('role','option');d.textContent=o;d.onmousedown=e=>e.preventDefault();d.onclick=()=>{sv.textContent=o;inp.value='';menu.innerHTML='';menu.className='';};menu.appendChild(d);});}
+inp.addEventListener('focus',open);inp.addEventListener('input',open);inp.addEventListener('click',open);
+</script></body></html>

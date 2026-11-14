@@ -30,7 +30,7 @@ import { applyFreshnessFilter, UNDATED_REASON } from '../search/freshnessFilter.
 import { sourceKind } from '../search/sources.js';
 import { createSourceTimings } from '../search/sourceTimings.js';
 import { createDetailCache } from '../search/detailBudget.js';
-import { applyExclusions } from '../scoring/exclusionFilter.js';
+import { applyExclusions, candidateNeedsSponsorship } from '../scoring/exclusionFilter.js';
 import { profileVocabularyFor, classifyTitleFit } from '../scoring/profileFit.js';
 import { postedPay } from '../scoring/searchConstraints.js';
 import { postedOnAgrees, locationFromExternalPath } from '../search/adapters/workday.js';
@@ -47,7 +47,13 @@ import { generateReport } from '../reports/reportGenerator.js';
 import { EVENT_TYPES } from '../logging/jobLogger.js';
 import { dateStamp, formatPostedRelative } from '../utils/dates.js';
 import { buildJobPaths } from '../utils/outputPaths.js';
-import { tailorResumeForJob } from '../resume/tailorRunner.js';
+import { keywordsForJob, tailorResumeForJob, writeLetterDocx } from '../resume/tailorRunner.js';
+import { composeGroundedLetter, letterSettings } from '../apply/groundedLetter.js';
+import { recordVersion } from '../apply/documentVersions.js';
+import { letterModeFor } from '../apply/letterMode.js';
+import { acceptedRewritesFor } from '../resume/rewrites.js';
+import { keptBulletsFor } from '../resume/keepBullets.js';
+import { readMasterLetterText } from '../apply/masterLetter.js';
 import { LIFECYCLE, lifecycleForTier, isQueuedTier, isProtectedJobRow } from '../lifecycle.js';
 import { emptyCounters, writeAllArtifacts } from '../outputs.js';
 import { findPlaceholders } from '../config/placeholders.js';
@@ -470,8 +476,7 @@ export async function runPipeline({ config, db, logger: suppliedLogger, mode, de
     });
     reportRows.push(row);
 
-    const neverRead = job.rawMetadata?.summaryOnly === true;
-    const unread = tier === TIERS.DISCARD && neverRead && titleVerdict !== 'reject';
+    const unread = isUnjudgeable(job, tier, titleVerdict);
     // ONE write per job. The unread case below used to write the scored verdict
     // and then immediately overwrite it; the final fields are decided first.
     const verdict = {
@@ -493,7 +498,9 @@ export async function runPipeline({ config, db, logger: suppliedLogger, mode, de
       ...payFields(job),
       ...(unread ? {
         status: 'needs_description',
-        discard_reason: 'not judged: the description was never fetched (summary only)',
+        discard_reason: job.rawMetadata?.summaryOnly === true
+          ? 'not judged: the description was never fetched (summary only)'
+          : 'not judged: the posting has no description to judge fit by',
         tier: null,
       } : {}),
     };
@@ -614,7 +621,9 @@ export async function runPipeline({ config, db, logger: suppliedLogger, mode, de
   // Order every actionable list freshest-first (last-24h > sponsorship > score >
   // direct ATS) so queues, artifacts, and console summaries surface the newest,
   // most-feasible roles at the top.
-  const rankByFreshness = compareJobsForQueue(now);
+  const rankByFreshness = compareJobsForQueue(now, {
+    ignoreSponsorship: candidateNeedsSponsorship(config.candidate) === false,
+  });
   scoredJobs.sort(rankByFreshness);
   scored.sort(rankByFreshness);
   queued.sort(rankByFreshness);
@@ -784,6 +793,13 @@ export async function preparePacket({ config, db, logger, job, score, tier, deps
         exportPdf: config?.runtime?.resumeExportPdf !== false,
         outputDir: outPaths.folder,
         outputFilename: `${outPaths.resumeBase}.docx`,
+        // Rewrites the person accepted for this job (P1-2); verified against
+        // the master resume, so the tailor can apply exactly these.
+        acceptedRewrites: db ? acceptedRewritesFor(db, job.id) : [],
+        // Bullets the person pinned for this job: never omitted to fit.
+        keepBullets: db ? keptBulletsFor(db, job.id) : [],
+        // config.runtime.resumeMaxPages: unset = 2, 0 = never omit to fit.
+        maxPages: config?.runtime?.resumeMaxPages,
       },
       deps,
     });
@@ -839,16 +855,74 @@ export async function preparePacket({ config, db, logger, job, score, tier, deps
     logger.error(resumeWarning, {}, job.id);
   }
 
-  // Cover letter (deterministic; only when warranted).
+  // Cover letter, only when warranted. The template is the default; with
+  // COVER_LETTER_MODE=grounded the body is written paragraph by paragraph from
+  // the resume and each paragraph is verified against it (P1-3). Either way it
+  // goes through the same greeting, closing, humanizer and checks.
+  let grounded = null;
+  const env = deps.env ?? process.env;
+  const templateChosen = db ? letterModeFor(db, job.id) === 'template' : false;
+  if (letterSettings(env, { root: config.root }).enabled && !templateChosen) {
+    try {
+      grounded = await (deps.composeGroundedLetterFn ?? composeGroundedLetter)({
+        job, config, requirements: keywordsForJob(score), env, deps,
+      });
+    } catch (err) {
+      grounded = { ok: false, reason: `grounded letter failed: ${err.message}` };
+    }
+  }
   const cover = generateCoverLetter(job, score, {
     coverLetter: config.coverLetter,
     candidate: config.candidate,
     humanizerPatterns: config.humanizerPatterns,
+    // The person's master cover letter, when they have written one: it is the
+    // source of the letter's voice and claims (letterTailor.js).
+    masterLetter: deps.masterLetterText ?? (config.root ? readMasterLetterText(config.root) : ''),
+    ...(grounded?.ok ? { compose: () => grounded.body } : {}),
   });
+  if (cover.generated) {
+    cover.grounding = grounded?.ok
+      ? { mode: 'grounded', task: grounded.provenance?.task ?? null, model: grounded.provenance?.model ?? null,
+        paragraphs: grounded.paragraphs, dropped: grounded.dropped ?? [] }
+      : { mode: cover.source === 'master' ? 'master' : 'template', fallbackReason: templateChosen ? 'you chose your template for this job' : (grounded ? grounded.reason : (cover.master && !cover.master.used ? cover.master.reason : null)), dropped: grounded?.dropped ?? [], master: cover.master ?? null };
+    cover.grounding.quality = cover.quality ?? null;
+  }
   let coverLetterPath = null;
   if (cover.generated) {
     coverLetterPath = writeCoverLetter(outPaths.folder, `${outPaths.coverLetterBase}.txt`, cover, deps);
-    logger.event(EVENT_TYPES.COVER_LETTER_GENERATED, { jobId: job.id, message: `cover letter (${cover.wordCount} words)` });
+    // The same text as a .docx for portals and recruiters that want a document.
+    // Best-effort: the .txt above stays the file uploads use.
+    const docxFn = deps.writeLetterDocxFn ?? (deps.writeFileImpl ? null : writeLetterDocx);
+    if (docxFn) {
+      try {
+        cover.docxPath = await docxFn({
+          text: cover.text, path: join(outPaths.folder, `${outPaths.coverLetterBase}.docx`), root: config.root, deps,
+        });
+      } catch (err) {
+        logger.warn?.(`cover letter .docx not written: ${err.message}`);
+      }
+    }
+    logger.event(EVENT_TYPES.COVER_LETTER_GENERATED, {
+      jobId: job.id, message: `cover letter (${cover.wordCount} words, ${cover.grounding.mode})`,
+    });
+  }
+
+  // Version history of this application's documents (P2-2). Real runs only:
+  // a test that stubs file writes has no documents on disk to copy.
+  const versionFn = deps.recordVersionFn ?? (deps.writeFileImpl ? null : recordVersion);
+  if (versionFn) {
+    try {
+      versionFn(outPaths.folder, {
+        cause: 'generated',
+        files: {
+          resume: resumeTailored ? resumePath : null, resumePdf: resumePdfPath,
+          letter: coverLetterPath, letterDocx: cover.docxPath ?? null,
+        },
+        task: cover.grounding?.task ?? null,
+      });
+    } catch (err) {
+      logger.warn?.(`document version not recorded: ${err.message}`);
+    }
   }
 
   const packet = buildApplicationPacket({
@@ -926,6 +1000,29 @@ function defaultWrite(dir, path, text) {
   writeFileAtomic(path, text, 'utf8');
 }
 /** Statuses owned by discovery/scoring — the only ones the guard applies to. */
+/**
+ * A description that says nothing: empty, or a pointer elsewhere ("See our
+ * website for details", "N/A"). With no skills to find, the reachable score is
+ * about 50, so a perfect role read as a weak one (audit 2026-11-11: an ICU
+ * nurse post with an empty description scored 50, Near miss, 40 points below
+ * the same post with its text). A SHORT but real description is still judged.
+ */
+const PLACEHOLDER_DESCRIPTION = /^(?:n\/?a|tbd|tba|none|-+|\.+)$|\b(?:see|visit|view|refer\s+to)\b[^.]{0,40}\b(?:website|site|link|posting|careers?\s+page|url)\b/i;
+
+/**
+ * Should this verdict be recorded as "not judged yet" instead? Only a low
+ * verdict (Near miss or Discard) on a posting never read in full, or whose
+ * description is empty or a placeholder, and never one whose TITLE already
+ * rules it out.
+ */
+export function isUnjudgeable(job, tier, titleVerdict) {
+  if (titleVerdict === 'reject') return false;
+  if (tier !== TIERS.DISCARD && tier !== TIERS.NEAR_MISS) return false;
+  if (job?.rawMetadata?.summaryOnly === true) return true;
+  const text = String(job?.jdText ?? '').trim();
+  return text === '' || (text.length < 80 && PLACEHOLDER_DESCRIPTION.test(text));
+}
+
 const DISCOVERY_STATUSES = new Set(['discarded', 'scored', 'unknown_date_review', 'needs_description']);
 
 /**
@@ -1346,7 +1443,7 @@ export function rescoreStale({ db, config, now = new Date(), fingerprint, limit 
       const score = scoreJob(job, { scoring: config.scoring, sponsorship, candidate: config.candidate, now, freshnessModel });
       const titleVerdict = vocab ? classifyTitleFit(job.title, vocab).verdict : null;
       const { tier, explanation } = explainScore(score, config.scoring, { titleVerdict, candidate: config.candidate });
-      const unread = tier === TIERS.DISCARD && job.rawMetadata.summaryOnly && titleVerdict !== 'reject';
+      const unread = isUnjudgeable(job, tier, titleVerdict);
       if (unread) out.unread += 1;
       else if (tier === TIERS.DISCARD && !keepBelow) out.discarded += 1;
       fields = {
@@ -1358,7 +1455,9 @@ export function rescoreStale({ db, config, now = new Date(), fingerprint, limit 
         discard_reason: tier === TIERS.DISCARD && !keepBelow ? 'below near-miss threshold' : null,
         ...(unread ? {
           status: 'needs_description',
-          discard_reason: 'not judged: the description was never fetched (summary only)',
+          discard_reason: job.rawMetadata?.summaryOnly
+            ? 'not judged: the description was never fetched (summary only)'
+            : 'not judged: the posting has no description to judge fit by',
           tier: null,
         } : {}),
       };

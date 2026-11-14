@@ -132,7 +132,7 @@ describe('dashboard server hardening', () => {
     expect(isLoopbackHost('localhost')).toBe(true);
     expect(isLoopbackHost('[::1]:9999')).toBe(true);
     expect(isLoopbackHost('evil.com')).toBe(false);
-    expect(isLoopbackHost(undefined)).toBe(true); // ancient clients; socket is loopback-bound
+    expect(isLoopbackHost(undefined)).toBe(false); // every HTTP/1.1 client sends Host; none is refused (P1-5)
     expect(isAllowedOrigin(undefined)).toBe(true);
     expect(isAllowedOrigin('http://localhost:4646')).toBe(true);
     expect(isAllowedOrigin('https://evil.com')).toBe(false);
@@ -247,9 +247,10 @@ describe('recordAssistResult truthfulness', () => {
     const broken = { upsertJob: () => { throw new Error('SQLITE_BUSY'); } };
     expect(() => recordAssistResult(broken, 'j1', { status: 'submitted', submitted: true, filled: [], blockers: [] }))
       .toThrow(/failed to record submitted application/);
-    // Non-submit outcomes stay best-effort (no throw).
+    // Every outcome is loud now: a lost "ready" or "blocked" left the job
+    // showing its old status with nothing on screen to say so (audit AF-12).
     expect(() => recordAssistResult(broken, 'j1', { status: 'ready_for_submit', submitted: false, filled: [], blockers: [] }))
-      .not.toThrow();
+      .toThrow(/failed to record auto-fill result \(ready_for_submit\)/);
   });
 });
 

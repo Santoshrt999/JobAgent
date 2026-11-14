@@ -23,6 +23,7 @@ import { join, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { APPROVAL_STATUS, approve, reject, latestApprovalsByJob } from '../apply/approvalQueue.js';
+import { APPROVAL_EVENT } from '../apply/approvalDigest.js';
 import { jsonList } from '../utils/json.js';
 import { isWithinLast24Hours, isWithinLastHours, formatPostedRelative, ageInDays } from '../utils/dates.js';
 import { EMPLOYMENT_LABELS } from '../scoring/employmentClassifier.js';
@@ -37,12 +38,20 @@ import {
 import { candidateTimeZone, dayOf } from '../domain/time.js';
 import {
   FOLLOWUP_EVENT, OUTCOME, OUTCOME_EVENT, OUTCOME_LABELS, OUTCOME_VALUES, TERMINAL_OUTCOMES, WORKSPACE_STAGES,
-  allowedOutcomes, applicationMetrics, canRecordOutcome, daysBetween, isIsoDay, replayFollowUps, replayOutcomes, stageOf,
+  allowedOutcomes, applicationMetrics, conversionBreakdown, canRecordOutcome, daysBetween, isIsoDay, replayFollowUps, replayOutcomes, stageOf,
   NO_OUTCOME_EXPORT, outcomeEventsByJob, outcomeExport, weeklySummary,
 } from '../domain/applicationOutcome.js';
 import { findPlaceholders } from '../config/placeholders.js';
 import { csvCell } from '../reports/csv.js';
 import { masterResumeFile, workspacePaths } from '../profile/workspace.js';
+import { letterModeFor } from '../apply/letterMode.js';
+import { displayCompany } from '../utils/companyName.js';
+import { extractHiddenClauses } from '../scoring/hiddenClauses.js';
+import { applicationAccess, openQuestionsFor, signInGroups } from '../apply/autofillReadiness.js';
+import { loadQuestionQueue } from '../apply/questionQueue.js';
+import { evidenceFor, masterResumeLines } from '../resume/evidenceMap.js';
+import { employerHistory } from './employerHistory.js';
+import { preferenceProposals } from './preferenceProposals.js';
 
 // The status vocabulary and the pure per-row rules moved to src/domain so the
 // tracker, reports and CLI can use them without importing this whole data
@@ -203,12 +212,13 @@ function explainStatusRaw(job = {}, appStatus = '', approval = null) {
       // "auto-submit clicked Submit" is simply false.
       if (/^you appear to have submitted/i.test(String(job.submitted_confirmation ?? ''))) {
         return 'You appear to have submitted this yourself: a confirmation page was seen in the window Job Agent '
-          + 'left open. Use "Mark submitted" to record it (add the confirmation number if you have one). '
-          + 'It is NOT counted as submitted until you confirm.';
+          + `left open. ${CONFIRM_HOW}`;
       }
-      return 'Auto-submit clicked Submit, but no confirmation page could be detected. Check your email '
-        + '(or the ATS) for a confirmation: if the application went through, use "Mark submitted"; if not, '
-        + 'open the posting and finish it manually. It is NOT counted as submitted until you confirm.';
+      // Neutral on purpose: this row may be your own report ("I submitted it
+      // myself" without a number) or an unverified click. It used to say
+      // "Auto-submit clicked Submit" to people who had pressed Submit
+      // themselves. jobDetail words it precisely from the job's history.
+      return `Reported as submitted, but not confirmed yet. ${CONFIRM_HOW}`;
     case APP_STATUS.BLOCKED:
       if (blockers.length) return `Assisted fill stopped: ${blockers.join('; ')}`;
       return 'An assisted-fill attempt stopped at an application wall (login, CAPTCHA, an account step, '
@@ -272,6 +282,11 @@ export function classifyAttention(job = {}, appStatus = '') {
   if (/login|sign[ -]?in|account required|authenticate|\bmfa\b/.test(reason)) return {
     kind: 'sign_in', label: 'Needs sign-in', summary: 'Sign in on the employer site, then retry Auto-fill.', retryable: true,
   };
+  if (/no application form found/.test(reason)) return {
+    kind: 'form_step', label: 'Continue to form',
+    summary: 'Auto-fill opened the posting but could not reach its application form. Open the posting, get to the form, then retry Auto-fill.',
+    retryable: true,
+  };
   if (/upload input not found|no upload selector resolved/.test(reason)) return {
     kind: 'form_step', label: 'Continue to form', summary: 'The resume field was not on the current page. Continue to the application form and retry Auto-fill.', retryable: true,
   };
@@ -286,12 +301,42 @@ export function classifyAttention(job = {}, appStatus = '') {
     summary: aggregator ? 'Use the employer Apply link, then save that direct URL here.' : 'The site restricts automated access; opening it manually may still work.',
     retryable: false,
   };
+  // Say WHAT the form wanted, in its own words. Both used to fall through to
+  // "Needs your help — open the application to complete the step…", which
+  // hid "You need to agree to the terms and conditions" behind a fold.
+  const raw = jsonList(job.assist_blockers).map(String);
+  const asked = raw.map((b) => b.match(/^(?:required field needs user|screening needs user):\s*(.+)$/i)?.[1]).filter(Boolean);
+  if (asked.length) {
+    const more = asked.length > 1 ? ` (and ${asked.length - 1} more)` : '';
+    return {
+      kind: 'question', label: 'Answer a question',
+      // The reason only: "Do this next" right below says what to do.
+      summary: `The form needs your answer to "${clip(asked[0])}"${more}.`,
+      retryable: true,
+    };
+  }
+  const said = raw.map((b) => b.match(/^form validation:\s*(.+)$/i)?.[1]).filter(Boolean);
+  if (said.length) return {
+    kind: 'form_check', label: 'Finish a form step',
+    summary: `The form said: "${clip(said[0])}"`,
+    retryable: true,
+  };
   if (appStatus === APP_STATUS.FAILED) return {
     kind: 'retry', label: 'Retry needed', summary: 'Review the recorded error, then retry Auto-fill.', retryable: true,
   };
   return {
     kind: 'needs_help', label: 'Needs your help', summary: 'Open the application to complete the step the assistant could not safely answer.', retryable: true,
   };
+}
+
+/** How an unverified submission is settled, in the buttons' own words. */
+const CONFIRM_HOW = 'If it went through, choose "Yes, it went through" (add the confirmation number if you have one); '
+  + 'if it didn\'t, choose "No, it didn\'t". It is NOT counted as submitted until you confirm.';
+
+/** One blocker phrase, short enough for a card. */
+function clip(text, max = 120) {
+  const t = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
 /** An Error carrying the HTTP status the server should reply with. */
@@ -520,6 +565,25 @@ function allBoardRows(db, now, scope = discoveryScope()) {
  *
  * Falls back to the full set when the db has no such method (test stubs).
  */
+/**
+ * How many jobs the Jobs list's "All jobs" tab holds — the same predicate as
+ * that tab, over the same cached rows — so another surface (Data quality)
+ * can quote the number without disagreeing with it (BUG-10).
+ */
+export function activeJobCount(db, now = new Date()) {
+  let n = 0;
+  for (const row of openBoardRows(db, now)) if (BOARD_VIEWS.all(row)) n += 1;
+  return n;
+}
+
+/**
+ * Memoize any per-database derived value on the shared data key: recomputed
+ * after a write or user mutation, otherwise served from memory.
+ */
+export function cachedForData(db, kind, now, compute) {
+  return cached(db, `ext:${kind}`, now, compute);
+}
+
 function openBoardRows(db, now, scope = discoveryScope()) {
   if (typeof db.listOpenJobsSummary !== 'function') return allBoardRows(db, now, scope);
   return cachedRows(db, `openRows:${scope.key}`, now, () => {
@@ -576,6 +640,18 @@ export const CLOSED_STATUSES = Object.freeze([
 const CLOSED_SET = new Set(CLOSED_STATUSES);
 
 /**
+ * Jobs already applied to (or deliberately passed on). Not "closed" — they are
+ * the Applications record — but no longer a DISCOVERY decision. The Jobs list
+ * promises "every open job that matches your search", and with these left in,
+ * its top slots were permanently held by jobs already applied to (BUG-08).
+ * Hidden from the default Jobs list (`hideApplied`) and its "All jobs" count.
+ */
+export const APPLIED_STATUSES = Object.freeze([
+  APP_STATUS.SUBMITTED, APP_STATUS.SUBMIT_UNVERIFIED, APP_STATUS.SKIPPED,
+]);
+const APPLIED_SET = new Set(APPLIED_STATUSES);
+
+/**
  * When was this job's packet prepared? Prefers the true prepared_at stamp;
  * legacy rows (prepared before the column existed) fall back to updated_at
  * ONLY while the row still sits in `prepared` (any later action bumps
@@ -613,7 +689,8 @@ const VIEW_UNTRIAGED = new Set([APP_STATUS.SCORED, APP_STATUS.DISCOVERED]);
 const VIEW_BLOCKED = new Set([APP_STATUS.BLOCKED, APP_STATUS.FAILED, APP_STATUS.CANCELLED]);
 
 export const BOARD_VIEWS = Object.freeze({
-  all: (r) => !CLOSED_SET.has(r.appStatus),
+  // "All jobs" on the Jobs list: open AND still a decision to make.
+  all: (r) => !CLOSED_SET.has(r.appStatus) && !APPLIED_SET.has(r.appStatus),
   today: (r) => VIEW_TODAY_ACTIONABLE.has(r.appStatus)
     || (r.postedLast24h && r.fit === 'strong' && VIEW_UNTRIAGED.has(r.appStatus))
     || (r.sponsorshipGated && !CLOSED_SET.has(r.appStatus)),
@@ -634,6 +711,10 @@ export const BOARD_VIEWS = Object.freeze({
   // holds both. `blocked` stays as it was: "Unblock applications" counts it.
   needs_you: (r) => VIEW_BLOCKED.has(r.appStatus) || r.appStatus === APP_STATUS.SUBMIT_UNVERIFIED,
   submitted: (r) => r.appStatus === APP_STATUS.SUBMITTED,
+  // Archived jobs had no tab: they were reachable only through the status
+  // dropdown, so archiving looked like deleting, with no visible way back. This
+  // is the one view that shows CLOSED rows, so it is left out of OPEN_ONLY_VIEWS.
+  archived: (r) => r.appStatus === APP_STATUS.ARCHIVED,
 });
 
 /**
@@ -648,7 +729,7 @@ const BOARD_VIEW_ENTRIES = Object.entries(BOARD_VIEWS);
  * row, so a request scoped to one of them may read the cheap open-only base set
  * (see openBoardRows) instead of the whole table.
  *
- * Every view above qualifies today: each either tests `!CLOSED_SET.has(...)`
+ * Every view above except `archived` qualifies: each either tests `!CLOSED_SET.has(...)`
  * directly or matches only specific non-closed statuses. That is a property of
  * the predicates, not a promise about them — so `dashboardFilters` has a test
  * that drives every listed view against the full cartesian product of the fields
@@ -656,7 +737,9 @@ const BOARD_VIEW_ENTRIES = Object.entries(BOARD_VIEWS);
  * combination matches. Add a view that can surface a closed row and either keep
  * it out of this set or that test will catch it.
  */
-export const OPEN_ONLY_VIEWS = new Set(Object.keys(BOARD_VIEWS));
+/** Views that exist to show CLOSED rows. Every view is in exactly one of these two sets. */
+export const CLOSED_ROW_VIEWS = new Set(['archived']);
+export const OPEN_ONLY_VIEWS = new Set(Object.keys(BOARD_VIEWS).filter((key) => !CLOSED_ROW_VIEWS.has(key)));
 
 /** Count rows per board view (each equals what clicking that tab shows). */
 export function countViews(rows = []) {
@@ -700,7 +783,8 @@ function boardRow(job, approval, now) {
   const attention = classifyAttention(job, appStatus);
   return {
     id: job.id,
-    company: job.company,
+    // Rows stored before names were cleaned still hold board tokens.
+    company: job.company == null ? job.company : displayCompany(job.company),
     // Historical provider rows can be incomplete. Never render a blank role
     // name (which also produces unusable checkbox/button accessible names).
     title: String(job.title ?? '').trim() || 'Title not identified',
@@ -1565,6 +1649,11 @@ function boardPageRows(db, filters = {}) {
   // request (e.g. the Blocked/Submitted tabs, or a "rejected" status filter).
   if (willHideClosed) {
     rows = rows.filter((r) => !CLOSED_SET.has(r.appStatus));
+    // The Jobs list (not Applications) also leaves out what was already applied
+    // to; the "All jobs" tab count (BOARD_VIEWS.all) says the same.
+    if (filters.hideApplied === true || filters.hideApplied === 'true') {
+      rows = rows.filter((r) => !APPLIED_SET.has(r.appStatus));
+    }
   }
 
   /*
@@ -1654,6 +1743,10 @@ export function jobDetail(db, jobId, deps = {}) {
         uploads: full.uploads ?? null,
         stopBeforeSubmit: full.stopBeforeSubmit !== false,
         submitReady: Boolean(full.submitReady),
+        coverLetterGenerated: Boolean(full.coverLetterGenerated),
+        coverLetterGrounding: full.coverLetterGrounding ?? null,
+        coverLetterDocxPath: full.coverLetterDocxPath ?? null,
+        letterMode: letterModeFor(db, jobId),
       };
     } catch (err) {
       packet = { error: `packet unreadable: ${err.message}` };
@@ -1705,11 +1798,47 @@ export function jobDetail(db, jobId, deps = {}) {
 
   // The free-text half of the decision reason lives on the decision event
   // (events are newest first here), not in a column of its own.
+  // Who put an unverified submission here? Your own "I submitted it myself"
+  // is logged as a human status change; say so instead of the neutral text.
+  // (A new value, not a write into `row`: board rows are cached and shared.)
+  let statusReason = row.statusReason;
+  if (row.appStatus === APP_STATUS.SUBMIT_UNVERIFIED) {
+    const reported = events.find((e) => e.type === 'status_changed' && e.metadata?.to === 'submit_unverified');
+    if (reported?.metadata?.actor === 'human') {
+      statusReason = `You reported submitting this yourself${reported.at ? ` (${String(reported.at).slice(0, 10)})` : ''}, `
+        + `without a confirmation number. ${CONFIRM_HOW}`;
+    }
+  }
+
   const decisionEvent = job.user_decision ? events.find((e) => e.type === 'user_decision') : null;
   const decisionReasonNote = decisionEvent?.metadata?.reasonNote ?? null;
 
   return {
-    ...row, decisionReasonNote, jdText: job.jd_text ?? null, packet, events, applicationState, applicationStateError,
+    ...row, statusReason, decisionReasonNote, jdText: job.jd_text ?? null, packet, events, applicationState, applicationStateError,
+    // Buried conditions (onsite ramp-up, travel, on-call, W2-only…), each with
+    // the sentence it came from. Read-only facts about the posting.
+    clauses: extractHiddenClauses(job.jd_text ?? ''),
+    // Before a browser opens: does this employer need an account, and which
+    // of this job's form questions has nobody answered yet?
+    access: applicationAccess(row),
+    // What the store already knows about this employer: how its other
+    // postings answered the sponsorship question, and whether this title is
+    // reposted again and again. Shown only; it changes no score or gate.
+    history: (() => { try { return employerHistory(db, job); } catch { return null; } })(),
+    // Each skill the posting asks for, with the master resume's own line that
+    // proves it (quotes only; an unproven skill has no lines).
+    evidence: (() => {
+      const root = deps.root ?? deps.config?.root ?? null;
+      if (!root) return null;
+      const lines = masterResumeLines(root);
+      if (!lines.length) return null;
+      return evidenceFor([...jsonList(job.matched_keywords), ...jsonList(job.missing_keywords)], lines);
+    })(),
+    openQuestions: (() => {
+      const root = deps.root ?? deps.config?.root ?? null;
+      if (!root) return [];
+      try { return openQuestionsFor(loadQuestionQueue(root), jobId); } catch { return []; }
+    })(),
     // The workspace card for this job (outcome, history, follow-up), or null
     // when it is not an application yet.
     application: (() => {
@@ -1832,10 +1961,20 @@ export function undoDecision(db, jobId) {
  * Approve a job's prepared packet for assisted filling (human action).
  * @returns {{ id: string, approvalId: string, status: string }}
  */
-export function approveJobPacket(db, jobId) {
+export function approveJobPacket(db, jobId, { digest = null } = {}) {
   const approval = db.getApprovalByJob?.(jobId);
   if (!approval) throw httpError(409, `no prepared packet to approve for job ${jobId}, run Prepare first`);
+  // Approving is a decision about something not yet sent. A job already
+  // submitted (or reported submitted) has nothing left to approve, and
+  // re-approving it is how a second fill of the same application starts.
+  const job = db.getJob?.(jobId);
+  if (job && (Number(job.applied) === 1 || ['submitted', 'submit_unverified'].includes(job.status))) {
+    throw httpError(409, 'this application was already submitted (or reported submitted), so there is nothing to approve');
+  }
   const r = approve(db, approval.id);
+  // The approval's audit record, with a digest of what was approved (see
+  // src/apply/approvalDigest.js) so a later fill can tell if it changed.
+  insertApprovalEvent(db, jobId, APPROVAL_EVENT, 'packet approved', { approvalId: approval.id, ...(digest ? { digest } : {}) });
   noteUserMutation();
   return { id: jobId, approvalId: approval.id, status: r.status };
 }
@@ -1848,8 +1987,59 @@ export function rejectJobPacket(db, jobId) {
   const approval = db.getApprovalByJob?.(jobId);
   if (!approval) throw httpError(409, `no prepared packet to reject for job ${jobId}`);
   const r = reject(db, approval.id);
+  insertApprovalEvent(db, jobId, 'packet_rejected', 'packet rejected', { approvalId: approval.id });
   noteUserMutation();
   return { id: jobId, approvalId: approval.id, status: r.status };
+}
+
+/**
+ * Take back an approval (human action). Allowed until the application is
+ * being filled or was submitted; the packet returns to "needs review".
+ * @returns {{ id: string, approvalId: string, status: string }}
+ */
+export function unapproveJobPacket(db, jobId) {
+  const approval = db.getApprovalByJob?.(jobId);
+  if (!approval || approval.approval_status !== APPROVAL_STATUS.APPROVED) {
+    throw httpError(409, 'this packet is not approved, so there is nothing to take back');
+  }
+  const job = db.getJob?.(jobId);
+  if (job && (Number(job.applied) === 1 || ['submitted', 'submit_unverified', 'assist_started'].includes(job.status))) {
+    throw httpError(409, job.status === 'assist_started'
+      ? 'auto-fill is running for this job; cancel it first'
+      : 'this application was already submitted (or reported submitted), so its approval stays');
+  }
+  db.updateApprovalStatus(approval.id, { approval_status: APPROVAL_STATUS.PENDING, approved_by_user: 0, approved_at: null });
+  insertApprovalEvent(db, jobId, 'packet_unapproved', 'approval taken back', { approvalId: approval.id });
+  noteUserMutation();
+  return { id: jobId, approvalId: approval.id, status: APPROVAL_STATUS.PENDING };
+}
+
+/**
+ * Take back an approval because what it covered has changed since. The packet
+ * returns to "needs review" so the person sees it and approves it again.
+ *
+ * @param {object} db
+ * @param {string} jobId
+ * @param {string[]} changes human names of what changed (approvalDigest.digestChanges)
+ * @returns {boolean} true when an approval was withdrawn
+ */
+export function withdrawApproval(db, jobId, changes = []) {
+  const approval = db.getApprovalByJob?.(jobId);
+  if (!approval || approval.approval_status !== APPROVAL_STATUS.APPROVED) return false;
+  db.updateApprovalStatus(approval.id, {
+    approval_status: APPROVAL_STATUS.PENDING, approved_by_user: 0, approved_at: null,
+  });
+  insertApprovalEvent(db, jobId, 'approval_withdrawn', `approval withdrawn: ${changes.join(', ')} changed since you approved`, { changes });
+  noteUserMutation();
+  return true;
+}
+
+/** Best-effort audit event for an approval decision (never fails the action). */
+function insertApprovalEvent(db, jobId, type, message, metadata) {
+  if (typeof db.insertEvent !== 'function') return;
+  try {
+    db.insertEvent({ id: randomUUID(), job_id: jobId, event_type: type, message, metadata });
+  } catch { /* the decision itself is already stored */ }
 }
 
 /** Timestamped note line appended to a job's notes. */
@@ -1887,6 +2077,42 @@ function appendNote(existing, label, at, note) {
  * @returns {{ id: string, appStatus: string, appliedAt: string|null, reportedAt: string,
  *             verified: boolean, confirmationNumber: string|null, alreadySubmitted?: true }}
  */
+/**
+ * "No, it didn't go through": take an unverified submission back to where it
+ * came from, so it can be finished. Only from submit_unverified, only by the
+ * person (see lifecycle HUMAN_UNSUBMIT), and never from a confirmed one.
+ *
+ * @param {object} db
+ * @param {string} jobId
+ * @returns {{ id: string, from: string, to: string }}
+ */
+export function retractSubmissionReport(db, jobId) {
+  const job = db.getJob(jobId);
+  if (!job) throw httpError(404, `unknown job id: ${jobId}`);
+  if (Number(job.applied) === 1 || job.status !== 'submit_unverified') {
+    throw httpError(409, 'only an unconfirmed submission can be marked as not gone through');
+  }
+  const events = db.listEvents?.(jobId) ?? [];
+  let came = null;
+  for (let i = events.length - 1; i >= 0 && !came; i -= 1) {
+    const e = events[i];
+    if (e.event_type !== 'status_changed') continue;
+    let meta = e.metadata;
+    if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = null; } }
+    if (meta?.to === 'submit_unverified') came = meta.from;
+  }
+  const to = came === 'ready_for_submit' ? 'ready_for_submit' : 'assist_blocked';
+  const patch = { submitted_confirmation: null };
+  // Back to "needs you" with the reason it now holds, unless the earlier
+  // blocker is still on the row (it is, after "I submitted it myself").
+  if (to === 'assist_blocked' && jsonList(job.assist_blockers).length === 0) {
+    patch.assist_blockers = JSON.stringify(['submission not confirmed: you said it did not go through — finish it in the browser, then retry auto-fill or record it']);
+  }
+  db.setJobStatus(jobId, to, { reason: 'the user said it did not go through', patch, actor: 'human' });
+  noteUserMutation();
+  return { id: jobId, from: 'submit_unverified', to };
+}
+
 export function markSubmittedByHuman(db, jobId, details = {}) {
   const job = db.getJob(jobId);
   if (!job) throw httpError(404, `unknown job id: ${jobId}`);
@@ -2049,6 +2275,7 @@ function workspaceItem(row, events, { today, timeZone, history = false }) {
     score: row.score, grade: row.grade, fit: row.fit, sponsorship: row.sponsorship ?? null,
     sponsorshipGated: row.sponsorshipGated === true, postedAt: row.postedAt ?? null, linkState: row.linkState ?? null,
     atsPlatform: row.atsPlatform ?? null, discoveryMode: row.discoveryMode ?? null,
+    source: row.source ?? null, tier: row.tier ?? null,
     appStatus: row.appStatus, statusLabel: row.statusLabel ?? APP_STATUS_LABELS[row.appStatus] ?? row.appStatus,
     statusReason: row.statusReason ? stripBannerChars(row.statusReason) : null,
     appliedAt: row.appliedAt ?? null, appliedOn: appliedDay, updatedAt: row.updatedAt ?? null,
@@ -2060,6 +2287,9 @@ function workspaceItem(row, events, { today, timeZone, history = false }) {
     followUp,
     awaitingDays: stage === 'applied' && appliedDay ? daysBetween(appliedDay, today) : null,
     sameCompany: 0,
+    // Needs an employer account (Workday, Oracle, iCIMS…) or none (Greenhouse…).
+    access: applicationAccess(row).kind,
+    attentionKind: row.attention?.kind ?? null,
   };
   item.nextAction = workspaceNextAction(row, stage, followUp);
   if (history) {
@@ -2090,6 +2320,9 @@ export function applicationsWorkspace(db, { now = new Date(), config = null } = 
   const timeZone = candidateTimeZone(config);
   return {
     generatedAt: now.toISOString(), today, stages: WORKSPACE_STAGES, items, metrics: applicationMetrics(items),
+    // "Sign in once, retry all": stopped fills grouped by employer portal.
+    signInGroups: signInGroups(items.map((i) => ({ ...i, attention: { kind: i.attentionKind } }))),
+    conversion: conversionBreakdown(items),
     weekly: weeklySummary({ items, eventsByJob: events, today, dayOf: (iso) => dayOf(iso, timeZone) }),
   };
 }
@@ -2425,6 +2658,16 @@ export function dashboardSections(db, { now = new Date(), limit = 8 } = {}) {
 /** Most items the Today queue returns. */
 export const TODAY_LIMIT = 10;
 
+/**
+ * Unsubmitted work on a posting older than this sinks to an "Aging" group at
+ * the bottom of Today (BUG-09). Shortlisted and prepared rows are exempt from
+ * automatic retirement, so without it a job shortlisted 78 days ago sat at #2,
+ * above roles posted this week. A filled form waiting for Submit, or an
+ * unconfirmed submission, is never demoted: those are minutes from done.
+ */
+export const TODAY_AGING_DAYS = 21;
+const AGING_EXEMPT = new Set([APP_STATUS.SUBMIT_UNVERIFIED, APP_STATUS.READY_FOR_SUBMIT]);
+
 /** Longest `reason` string in a Today item. */
 const TODAY_REASON_MAX = 240;
 
@@ -2443,7 +2686,10 @@ function todayAction(row) {
       return { rank: 1, kind: 'submit', label: 'Review the filled form and click Submit' };
     case APP_STATUS.BLOCKED: {
       const blockers = (row.assistBlockers ?? []).join(' ');
-      return QUESTION_BLOCKER_RE.test(blockers) || row.attention?.kind === 'needs_help'
+      // A form that refused a step (unticked terms, a bad date) is not a
+      // question for the profile: the button opens the job at the reason.
+      if (row.attention?.kind === 'form_check') return { rank: 2, kind: 'review', label: 'See what stopped it' };
+      return QUESTION_BLOCKER_RE.test(blockers) || ['needs_help', 'question'].includes(row.attention?.kind)
         ? { rank: 2, kind: 'answer', label: 'Answer the question that stopped auto-fill' }
         : { rank: 2, kind: 'review', label: row.attention?.summary ?? 'Finish the step auto-fill could not' };
     }
@@ -2572,14 +2818,73 @@ export function systemNotices(rows = [], config = null, { browserAvailable = nul
       notices.push({
         code: 'profile_placeholders',
         severity: 'error',
-        message: `${labels.length} profile value(s) are still template text: ${shown}. `
-          + 'Applications will not be prepared until they are real.',
-        fix: 'Open Settings → Application profile (or edit the search profile) and replace each highlighted field '
-          + 'with your real, truthful value.',
+        message: labels.length === 1
+          ? `Replace 1 template value before applying: ${shown}.`
+          : `Replace ${labels.length} template values before applying: ${shown}.`,
+        fix: 'Applications stay on hold until these are real. Each line below says where to fix it: the '
+          + 'Application profile, your saved search profile, or the cover-letter settings.',
+        // Per field: what it says now and WHERE the fix sticks. The old notice
+        // said only "Settings → Application profile", which cannot edit work
+        // authorization or the cover letter, so following it changed nothing
+        // and Prepare kept refusing with no visible reason.
+        items: placeholderFixes(found.placeholders, { profileId: config.profile?.id ?? null }),
       });
     }
   }
   return notices;
+}
+
+/** Candidate fields the Application profile dialog edits (src/config/profileStore.js PROFILE_FIELDS). */
+const APPLICATION_PROFILE_PATH = /^(identity\.(fullName|preferredName|links\.linkedin)|contact\.(email|phone)|location\.(city|state|zip))$/;
+
+/**
+ * Where each template value is actually fixed.
+ *
+ * `findPlaceholders` reports candidate fields as living in config/candidate.json,
+ * but that file is regenerated from the active search profile on every
+ * activation: an edit made there is overwritten. So each field is pointed at the
+ * place that keeps it, a screen wherever one exists: the Application profile
+ * fields, the Saved answer it is filled from (src/config/answerFallbacks.js), or
+ * the master resume. Only a fact with no screen at all names a file.
+ *
+ * @param {Array<{path: string, label: string, value: string, file: string}>} placeholders
+ * @param {{profileId?: string|null}} [options]
+ * @returns {Array<{label: string, value: string, where: string, how: string}>}
+ */
+export function placeholderFixes(placeholders = [], { profileId = null } = {}) {
+  const id = profileId || '<profile-id>';
+  const profileFile = `config/profiles/${id}.json`;
+  const activate = `\`npm run profiles activate ${id}\``;
+  return placeholders.map(({ path = '', label, value, file }) => {
+    let where;
+    let how;
+    if (file === 'config/candidate.json' && APPLICATION_PROFILE_PATH.test(path)) {
+      where = 'Application profile';
+      how = 'Open the account menu, choose Application profile, and fill in this field.';
+    } else if (file === 'config/candidate.json' && path.startsWith('workAuthorization.')) {
+      // Filled from this answer at load time (src/config/answerFallbacks.js).
+      where = 'Application profile → Saved answers';
+      how = 'Answer "work_authorization" with your real status. This value is filled from it.';
+    } else if (file === 'config/candidate.json') {
+      // Work history and education: what the resume already states.
+      where = 'Master resume';
+      how = `Use "Fill from my resume" in this notice, or edit the background section of ${profileFile} and run ${activate}.`;
+    } else if (file === 'config/screening_answers.json') {
+      where = 'Application profile → Saved answers';
+      how = 'Open the account menu, choose Application profile, and replace this answer.';
+    } else if (path === 'yearsOfExperience') {
+      where = 'Application profile → Saved answers';
+      how = 'Answer "years_experience", for example 8 years. This value is filled from it.';
+    } else if (path === 'template.sponsorshipNote') {
+      // Built from the stated status when sponsorship is required.
+      where = 'Application profile → Saved answers';
+      how = 'Answer "work_authorization" with your real status. The sentence is written from it.';
+    } else {
+      where = file;
+      how = `Set ${path} in ${file} to your real value.`;
+    }
+    return { label, value: String(value ?? ''), where, how };
+  });
 }
 
 /**
@@ -2661,7 +2966,13 @@ export function todayQueue(db, {
       continue;
     }
     const action = todayAction(row);
-    if (action) candidates.push({ row, action });
+    if (action) {
+      const age = ageInDays(row.postedAt, now);
+      if (age !== null && age > TODAY_AGING_DAYS && !AGING_EXEMPT.has(row.appStatus)) {
+        // Below every fresh action, above housekeeping; same order within.
+        candidates.push({ row, action: { ...action, rank: 8.5 + action.rank / 100, aging: age } });
+      } else candidates.push({ row, action });
+    }
     else {
       const extra = todayTopUp(row);
       if (extra) topUp.push({ row, action: extra });
@@ -2693,6 +3004,8 @@ export function todayQueue(db, {
       : action.closed ? todayReason(row, action) : withCaveat(todayReason(row, action), staleCaveat(row, now, config)),
     nextAction: { kind: action.kind, label: action.label },
     followUp: action.followUp ?? null,
+    // Days since posting when the item was demoted for its age, else null.
+    aging: action.aging ?? null,
     // Display-only signals, so a card can SAY whether a posting is aging,
     // held for a sponsorship check, unread, or closed instead of implying it.
     fit: row.fit ?? null,
@@ -2700,7 +3013,21 @@ export function todayQueue(db, {
     sponsorshipGated: row.sponsorshipGated === true,
     linkState: row.linkState ?? null,
   }));
-  return { generatedAt: now.toISOString(), items, systemNotices: systemNotices(rows, config, { browserAvailable }) };
+  return {
+    generatedAt: now.toISOString(), items, systemNotices: systemNotices(rows, config, { browserAvailable }),
+    signInGroups: signInGroups(rows),
+    // Patterns in what the person turns down, as proposals they can take or leave.
+    proposals: (() => {
+      try {
+        const decided = db.db?.prepare?.(`SELECT id, company, user_decision, decision_reason, decided_at, status
+          FROM jobs WHERE user_decision IN ('rejected', 'archived')`).all() ?? [];
+        if (!decided.length) return [];
+        const open = rows.filter((r) => !r.userDecision)
+          .map((r) => ({ id: r.id, company: r.company, user_decision: null, status: r.appStatus }));
+        return preferenceProposals([...decided, ...open], { now });
+      } catch { return []; }
+    })(),
+  };
 }
 
 /** Columns for the rich CSV/spreadsheet export, in order. */

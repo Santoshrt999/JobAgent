@@ -16,6 +16,9 @@
 
 import { humanize, hasBannedContent } from './humanizer.js';
 import { assertNoTemplateTokens } from '../config/placeholders.js';
+import { composeFromMaster } from './letterTailor.js';
+import { assessLetter } from './letterQuality.js';
+import { displayCompany } from '../utils/companyName.js';
 
 /**
  * @param {object} job normalized job (title, company, ...)
@@ -26,10 +29,13 @@ import { assertNoTemplateTokens } from '../config/placeholders.js';
  * @param {object} args.humanizerPatterns parsed config/humanizer_patterns.json
  * @param {boolean} [args.required=false] employer requires a cover letter
  * @param {(ctx: object) => string} [args.compose] optional custom composer
+ * @param {string} [args.masterLetter] the person's master cover letter text.
+ *   When it has finished paragraphs it is the source of the letter (tailored
+ *   by letterTailor.js); the template below is the fallback.
  * @returns {{ generated: boolean, reason: string, text: string|null, wordCount: number }}
  */
 export function generateCoverLetter(job, scoreResult, {
-  coverLetter, candidate, humanizerPatterns, required = false, compose,
+  coverLetter, candidate, humanizerPatterns, required = false, compose, masterLetter,
 } = {}) {
   if (!coverLetter?.enabled) {
     return skip('cover letters disabled in config');
@@ -40,16 +46,25 @@ export function generateCoverLetter(job, scoreResult, {
   }
 
   const ctx = buildContext(job, scoreResult, candidate, coverLetter);
-  let body = typeof compose === 'function' ? compose(ctx) : composeDefault(ctx, coverLetter);
+  // The person's own master letter comes first; an injected composer (the
+  // grounded LLM path) still wins over it, and the template is the fallback.
+  const fromMaster = typeof compose !== 'function' && String(masterLetter ?? '').trim()
+    ? composeFromMaster({ master: masterLetter, job, score: scoreResult, candidate, required })
+    : null;
+  let body = typeof compose === 'function' ? compose(ctx)
+    : fromMaster?.ok ? fromMaster.body : composeDefault(ctx, coverLetter);
 
   // The employer's name and the role title are quoted, not written by us.
   body = humanize(body, humanizerPatterns, { protect: [ctx.company, ctx.title] });
-  body = enforceWordCount(body, coverLetter.wordCount);
+  body = enforceWordCount(body, fromMaster?.ok ? fromMaster.limits : coverLetter.wordCount);
 
   // The greeting and sign-off are template text too ("Dear {company} team,"),
   // so they go through the same fill as the body instead of being pasted raw.
-  const greeting = coverLetter.greeting === undefined ? undefined : fill(coverLetter.greeting, ctx);
-  const closing = coverLetter.closing === undefined ? undefined : fill(coverLetter.closing, ctx);
+  // A master letter's own greeting and sign-off are the person's choice.
+  const greeting = fromMaster?.ok && fromMaster.greeting ? fromMaster.greeting
+    : coverLetter.greeting === undefined ? undefined : fill(coverLetter.greeting, ctx);
+  const ownSignoff = fromMaster?.ok && countWords(fromMaster.signoff[0] ?? '') <= 4 ? fromMaster.signoff[0] : null;
+  const closing = ownSignoff ?? (coverLetter.closing === undefined ? undefined : fill(coverLetter.closing, ctx));
   const text = [greeting, '', body, '', closing, candidate?.identity?.fullName]
     .filter((l) => l !== undefined)
     .join('\n');
@@ -68,6 +83,16 @@ export function generateCoverLetter(job, scoreResult, {
     text,
     wordCount,
     cleaned: !hasBannedContent(text, humanizerPatterns),
+    // Where the words came from, for the review screen.
+    source: typeof compose === 'function' ? 'composed' : fromMaster?.ok ? 'master' : 'template',
+    ...(fromMaster ? {
+      master: {
+        used: fromMaster.ok, reason: fromMaster.reason ?? null, depth: fromMaster.depth,
+        paragraphs: fromMaster.paragraphs.map((p) => p.source), skipped: fromMaster.skipped.length,
+        warnings: fromMaster.warnings,
+      },
+    } : {}),
+    quality: assessLetter(text, { company: ctx.company, title: ctx.title }),
   };
 }
 
@@ -191,7 +216,8 @@ function buildContext(job, scoreResult, candidate, coverLetter) {
   const authStatus = String(candidate?.workAuthorization?.status ?? '').trim();
   return {
     title: job?.title ?? 'this role',
-    company: job?.company ?? 'your company',
+    // A board token ("shieldai") is never written into a letter as a name.
+    company: job?.company ? displayCompany(job.company) : 'your company',
     headline: candidate?.identity?.headline
       ?? candidate?.targetTitles?.[0]
       ?? 'candidate',

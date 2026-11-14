@@ -111,6 +111,7 @@ describe('auto-submit batch route', () => {
     dash = await startDashboard({
       config: {}, db, logger: null, port: 0,
       deps: {
+        liveVerifiedAts: ['greenhouse'], // a supervised live run is on record (P1-11)
         loadPacketImpl: () => ({
           id: 'pk', job: { id: 'j1', url: 'https://boards.greenhouse.io/acme/jobs/1' }, ats: { platform: 'greenhouse' },
           blockers: [], resumePath: '/r.docx', prefill: { plan: [], needsUser: [] },

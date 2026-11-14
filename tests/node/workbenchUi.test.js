@@ -334,7 +334,10 @@ describe('master resume management', () => {
 
 describe('accessibility', () => {
   it('makes board rows keyboard operable', () => {
-    expect(app).toContain("tabindex: '0'");
+    // One roving tab stop for the whole board (BUG-12), moved by arrows and j/k.
+    expect(app).toContain("tabindex: '-1'");
+    expect(app).toContain('export function setRowTabStop(row)');
+    expect(app).toContain("event.key === 'j'");
     expect(app).toContain("event.key === 'Enter'");
     expect(app).toContain("event.key === 'ArrowDown'");
   });
@@ -602,8 +605,11 @@ describe('run state and recovery', () => {
 
   it('groups the big counts a discovery run produces', () => {
     // "Found 14461" is materially harder to read than "Found 14,461".
-    expect(app).toContain('fmt(counters.jobs_found)');
-    expect(app).not.toMatch(/\$\{counters\.jobs_found \?\? 0\}/);
+    // The seen count is read once into `seen` (so "N new (all of them)" can
+    // compare it with the new count) and is only ever printed through fmt().
+    expect(app).toMatch(/const seen = Number\(counters\.jobs_found \?\? 0\)/);
+    expect(app).toContain('fmt(seen)');
+    expect(app).not.toMatch(/\$\{seen\}|\$\{counters\.jobs_found \?\? 0\}/);
   });
 
   it('leads the discovery summary with what was NEW, not the total seen', () => {

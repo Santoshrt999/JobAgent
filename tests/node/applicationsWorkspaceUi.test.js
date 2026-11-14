@@ -19,7 +19,7 @@ const workspace = js('workspace.js');
 
 describe('markup', () => {
   it('mounts the workspace inside the Applications view with a Board/List switch', () => {
-    expect(html).toContain('<section class="workspace" id="workspace" aria-labelledby="boardHeading" hidden>');
+    expect(html).toContain('<section class="workspace" id="workspace" aria-label="Applications by stage" hidden>');
     expect(html).toMatch(/id="appsLayout" role="group" aria-label="Layout" hidden/);
     expect(html).toContain('data-action="set-apps-layout" data-layout="kanban" aria-pressed="true">Board</button>');
     expect(html).toContain('data-action="set-apps-layout" data-layout="list" aria-pressed="false">List</button>');

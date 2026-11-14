@@ -21,28 +21,28 @@ Sources divide into two kinds, and the distinction decides what they can find:
   `scripts/harvestSources.mjs` feeds what they find back into the company-first
   board lists so the coverage compounds.
 
-| Source | Kind | Discovery | Detail extraction | Limitations | Fixture-tested |
-| --- | --- | --- | --- | --- | --- |
-| Greenhouse | company-first | ✅ public board API | ✅ JD + `first_published` posted date | board token must be configured | ✅ `searchAdapters`, `dataQualityRegressions` |
-| Lever | company-first | ✅ public postings API | ✅ | company slug must be configured | ✅ `searchAdapters` |
-| Ashby | company-first | ✅ public posting API | ✅ | org slug must be configured | ✅ `ashbySmartrecruiters` |
-| SmartRecruiters | company-first | ✅ public company API, paged via `offset` | ✅ | company id must be configured | ✅ `ashbySmartrecruiters` |
-| **Workable — all companies** | query-first | ✅ public search API (`jobs.workable.com/api/v1/jobs`) | ✅ full JD inline, no detail fetch needed | OR-matches query terms → phrase-quoted + title-gated client-side; ranks by RELEVANCE and honors no sort param → `day_range` (default 7) is the only recency lever | ✅ `atsSearch` |
-| **SmartRecruiters — all companies** | query-first | ◐ public search API, newest 100 per query | ◐ optional budgeted fetch via public Posting API | server ignores `offset` (no pagination) **and ignores every country param** → country enforced client-side; newest-first ≠ fresh on niche titles (89% of rows measured over a year old) → `maxAgeDays` enforced client-side | ✅ `atsSearch` |
-| **Adzuna** | query-first | ✅ official aggregator API, free key — **verified live 2026-08-01** | ✅ `full_description` when present | `what_phrase` matches anywhere in the posting body, not just the title (a bare "Data Engineer" query returned 31,148 hits) → same client-side title gate atsSearch uses; ~1,000 calls/month; apply URL must stay `redirect_url` per their terms | ✅ `adzuna` |
-| Workday | company-first | ◐ public CXS job feeds, searched with phrases derived from `candidate.targetTitles` | ✅ | tenant/site must be configured; some tenants block unauthenticated feeds → per-source RCA; `limit` >20 and any offset past `total` return nothing | ✅ `searchAdapters`, `workdaySearchTerms`, `workdayJobUrl` |
-| iCIMS | company-first | ✅ server-rendered portals, 54 configured | ✅ | portal markup varies by tenant; some tenants login-wall the portal itself | ◐ covered by `searchAdapters` |
-| Rippling | company-first | ✅ public board API, 29 configured | ✅ | board slug must be configured | ◐ covered by `searchAdapters` |
-| Amazon Jobs | company-first | ✅ public `search.json`, covers the whole amazon.jobs family | ✅ employer read per posting | single employer family; no board configuration needed | ◐ covered by `searchAdapters` |
-| Oracle Recruiting | company-first | ◐ public candidate REST API, 41 tenants configured | ◐ | **UNPROVEN: 0 rows in the live store despite being enabled.** Either mis-tagged on write or not producing — do not count on it until a run demonstrates otherwise | ❌ no dedicated fixture |
-| The Muse | query-first | ◐ cross-company board | ◐ aggregator URLs, tagged so the UI asks for a direct link | low yield (117 rows); listings link onward rather than to the employer ATS | ◐ covered by `searchAdapters` |
-| Company career pages | company-first | ◐ JSON-LD (`JobPosting`) + sitemaps | ✅ where JSON-LD present | no JSON-LD → no extraction (reported, not guessed) | ✅ `discoveryCoverage`, `careersPageHardening` |
-| LinkedIn — direct | — | ◐ public `/jobs/view/` URLs you provide | ✅ JSON-LD | ❌ query/feed search — login-walled, and the unauthenticated `jobs-guest` endpoint third-party scrapers use answers **404** (probed 2026-08-01). Reaching it needs evasion, which is refused with an explanatory error | ✅ `directSourceAdapters` |
-| Indeed — direct | — | ◐ public posting URLs you provide | ✅ JSON-LD | ❌ query search — `/jobs?q=` returns **403** (Cloudflare) and the Publisher API host no longer resolves (both probed 2026-08-01) | ✅ `directSourceAdapters` |
-| Dice — direct | — | ◐ public posting URLs you provide | ✅ JSON-LD | ❌ query search — `job-search-api.svc.dhigroupinc.com` returns **403**, legacy `api.dice.com` **404** (probed 2026-08-01) | ✅ `directSourceAdapters` |
-| LinkedIn / Indeed / Dice / Glassdoor — via Apify provider | query-first | ✅ query-based through YOUR Apify account + actors | ✅ actor output mapped to normalized jobs | **billed per run** — a free-plan monthly cap silently stops every actor until the cycle resets (surfaced as `quota_exhausted`); actor schema changes surface as RCA (`schema_changed`) | ✅ `searchAdapters` provider mappings, `apifyBilling` |
-| Manual CSV / Add-by-URL | — | ✅ | ✅ | you supply the data | ✅ `cliCommands`, `dashboardServer` |
-| Staffing/recruiting portals | — | ◐ reachable via atsSearch, Apify actors, or public URLs | ✅ where JSON-LD/API exists | no dedicated adapters | ◐ covered by the paths above |
+| Source | Kind | On by default | Discovery | Detail extraction | Limitations | Fixture-tested |
+| --- | --- | --- | --- | --- | --- | --- |
+| Greenhouse | company-first | yes | ✅ public board API | ✅ JD + `first_published` posted date | board token must be configured | ✅ `searchAdapters`, `dataQualityRegressions` |
+| Lever | company-first | yes | ✅ public postings API | ✅ | company slug must be configured | ✅ `searchAdapters` |
+| Ashby | company-first | yes | ✅ public posting API | ✅ | org slug must be configured | ✅ `ashbySmartrecruiters` |
+| SmartRecruiters | company-first | yes | ✅ public company API, paged via `offset` | ✅ | company id must be configured | ✅ `ashbySmartrecruiters` |
+| **Workable — all companies** | query-first | yes | ✅ public search API (`jobs.workable.com/api/v1/jobs`) | ✅ full JD inline, no detail fetch needed | OR-matches query terms → phrase-quoted + title-gated client-side; ranks by RELEVANCE and honors no sort param → `day_range` (default 7) is the only recency lever | ✅ `atsSearch` |
+| **SmartRecruiters — all companies** | query-first | yes | ◐ public search API, newest 100 per query | ◐ optional budgeted fetch via public Posting API | server ignores `offset` (no pagination) **and ignores every country param** → country enforced client-side; newest-first ≠ fresh on niche titles (89% of rows measured over a year old) → `maxAgeDays` enforced client-side | ✅ `atsSearch` |
+| **Adzuna** | query-first | no (needs a free key) | ✅ official aggregator API, free key — **verified live 2026-08-01** | ✅ `full_description` when present | `what_phrase` matches anywhere in the posting body, not just the title (a bare "Data Engineer" query returned 31,148 hits) → same client-side title gate atsSearch uses; ~1,000 calls/month; apply URL must stay `redirect_url` per their terms | ✅ `adzuna` |
+| Workday | company-first | yes | ◐ public CXS job feeds, searched with phrases derived from `candidate.targetTitles` | ✅ | tenant/site must be configured; some tenants block unauthenticated feeds → per-source RCA; `limit` >20 and any offset past `total` return nothing | ✅ `searchAdapters`, `workdaySearchTerms`, `workdayJobUrl` |
+| iCIMS | company-first | yes | ✅ server-rendered portals, 54 configured | ✅ | portal markup varies by tenant; some tenants login-wall the portal itself | ◐ covered by `searchAdapters` |
+| Rippling | company-first | yes | ✅ public board API, 29 configured | ✅ | board slug must be configured | ◐ covered by `searchAdapters` |
+| Amazon Jobs | company-first | yes | ✅ public `search.json`, covers the whole amazon.jobs family | ✅ employer read per posting | single employer family; no board configuration needed | ◐ covered by `searchAdapters` |
+| Oracle Recruiting | company-first | yes | ◐ public candidate REST API, 41 tenants configured | ◐ | Producing: 7,984 rows in a live store between 2026-09-22 and 2026-11-10 (this line said 0 rows until 2026-11-10). Still no dedicated fixture, so a parser regression would not be caught by tests | ❌ no dedicated fixture |
+| The Muse | query-first | yes | ◐ cross-company board | ◐ aggregator URLs, tagged so the UI asks for a direct link | low yield (117 rows); listings link onward rather than to the employer ATS | ◐ covered by `searchAdapters` |
+| Company career pages | company-first | yes | ◐ JSON-LD (`JobPosting`) + sitemaps | ✅ where JSON-LD present | no JSON-LD → no extraction (reported, not guessed) | ✅ `discoveryCoverage`, `careersPageHardening` |
+| LinkedIn — direct | — | no (paste URLs) | ◐ public `/jobs/view/` URLs you provide | ✅ JSON-LD | ❌ query/feed search — login-walled, and the unauthenticated `jobs-guest` endpoint third-party scrapers use answers **404** (probed 2026-08-01). Reaching it needs evasion, which is refused with an explanatory error | ✅ `directSourceAdapters` |
+| Indeed — direct | — | no (paste URLs) | ◐ public posting URLs you provide | ✅ JSON-LD | ❌ query search — `/jobs?q=` returns **403** (Cloudflare) and the Publisher API host no longer resolves (both probed 2026-08-01) | ✅ `directSourceAdapters` |
+| Dice — direct | — | no (paste URLs) | ◐ public posting URLs you provide | ✅ JSON-LD | ❌ query search — `job-search-api.svc.dhigroupinc.com` returns **403**, legacy `api.dice.com` **404** (probed 2026-08-01) | ✅ `directSourceAdapters` |
+| LinkedIn / Indeed / Dice / Glassdoor — via Apify provider | query-first | no (needs your Apify token) | ✅ query-based through YOUR Apify account + actors | ✅ actor output mapped to normalized jobs | **billed per run** — a free-plan monthly cap silently stops every actor until the cycle resets (surfaced as `quota_exhausted`); actor schema changes surface as RCA (`schema_changed`) | ✅ `searchAdapters` provider mappings, `apifyBilling` |
+| Manual CSV / Add-by-URL | — | yes | ✅ | ✅ | you supply the data | ✅ `cliCommands`, `dashboardServer` |
+| Staffing/recruiting portals | — | — | ◐ reachable via atsSearch, Apify actors, or public URLs | ✅ where JSON-LD/API exists | no dedicated adapters | ◐ covered by the paths above |
 
 Measured baseline (2026-08-01, 492 configured boards, Apify excluded because its
 quota was spent): **71,827 unique jobs, 20,574 cross-source duplicates removed,
@@ -178,8 +178,10 @@ Keyless aggregators were measured as substitutes and rejected on yield, not
 principle: Arbeitnow returned 3 on-target rows of 175 (predominantly Germany),
 Remotive 0 of 34, The Muse 0 of 20. Adding them would cost requests and add
 noise. **Adzuna** is the one keyed aggregator worth enabling — it supports
-`max_days_old=1`, which is exactly the last-24h question — and it is now
-enabled by default (verified live, see above).
+`max_days_old=1`, which is exactly the last-24h question. It ships disabled,
+because without `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` it can return nothing: add
+a free key to `.env` and set `enabled: true` on `adzuna-aggregator` in
+`config/jobboards.json` (verified live, see above).
 
 Worth keeping in perspective: of the employers Apify ever surfaced, 96% had
 never been seen by any free source, so this is genuine lost breadth rather than
@@ -247,6 +249,12 @@ tenant that sets `searchText: ""` still means "enumerate everything".
 | Taleo | ◐ generic resolver + selector hints | ◐ | ◐ | ◐ | legacy multi-frame flows often blocked | ❌ no dedicated fixture |
 | Jobvite | ◐ generic resolver + selector hints | ◐ | ◐ | ◐ | — | ❌ no dedicated fixture |
 | Generic accessible forms | ✅ semantic field resolver (labels/ARIA/question text; selects, comboboxes, radios, checkboxes, dates, files, conditionals) | ✅ safe Next/Continue only | ✅ | ✅ | unknown required questions block (never guessed). **Assisted fill only — never eligible for auto-submit**, since an unrecognised site is by definition not fixture-verified | ✅ `atsApplicationFixtures` generic case, `validationDetection`, `fieldFiller` |
+
+**Live verification.** None of the ATS rows above has a recorded supervised
+live run yet, so final Auto-submit is refused on every ATS. Auto-submit on an
+ATS requires an entry in `config/verified_live_ats.json`; see
+[LIVE_VERIFICATION.md](LIVE_VERIFICATION.md). Assisted fill, which never
+submits, is unaffected.
 
 Filling-wide guarantees (tested): CAPTCHA/login/MFA/bot walls always stop the
 run (`guards`); validation-error detection after fill and after advancing

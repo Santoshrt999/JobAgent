@@ -5,7 +5,7 @@ import { state } from './state.js';
 import { api } from './api.js';
 import { filterParams, renderActiveFilters, TABS } from './filters.js';
 import { renderTabs } from './analytics.js';
-import { cssEscape, isAggregatorUrl } from './detail.js';
+import { cssEscape, isAggregatorUrl, syncDetailToList } from './detail.js';
 import { syncSelectAll, syncSelectionBar } from './selection.js';
 import { hasActiveFilters } from './main.js';
 import { freshnessOf } from './format.js';
@@ -29,7 +29,7 @@ export function renderBoardStatus() {
   else if (boardStatus.updatedAt) {
     const secs = Math.round((Date.now() - boardStatus.updatedAt) / 1000);
     parts.push(secs < 5 ? 'Updated just now'
-      : secs < 60 ? `Updated ${secs} s ago` : `Updated ${Math.floor(secs / 60)} min ago`);
+      : secs < 60 ? `Updated ${secs}s ago` : `Updated ${Math.floor(secs / 60)}m ago`);
   }
   if (state.stats?.stale) parts.push('Showing cached numbers — recalculating');
   node.textContent = parts.join(' · ');
@@ -106,6 +106,7 @@ export async function loadBoard() {
   state.filteredViewCounts = page.viewCounts ?? null;
 
   renderRows(page.jobs);
+  if (state.syncDetail) { state.syncDetail = false; syncDetailToList(state.visible); }
   renderPager(page);
   renderTabs();
   syncSelectAll();
@@ -186,9 +187,32 @@ export function renderRows(jobs) {
   }
 
   const frag = document.createDocumentFragment();
-  for (const job of jobs) frag.append(rowFor(job));
+  for (const job of jobs) {
+    const tr = rowFor(job);
+    for (const c of tr.querySelectorAll(ROW_CONTROLS)) c.tabIndex = -1;
+    frag.append(tr);
+  }
   body.append(frag);
+  setRowTabStop(body.querySelector('tr.job[aria-current="true"]') ?? body.querySelector('tr.job'));
   restoreRowFocus(focus);
+}
+
+/** Interactive controls inside a row: tabbable only on the row holding the tab stop. */
+export const ROW_CONTROLS = 'a[href], button, input, select, textarea, [role="button"]';
+
+/**
+ * Give `row` the board's single tab stop (and its own controls with it).
+ * @param {HTMLElement|null} row
+ */
+export function setRowTabStop(row) {
+  for (const tr of $('rows').querySelectorAll('tr.job[tabindex="0"]')) {
+    if (tr === row) continue;
+    tr.tabIndex = -1;
+    for (const c of tr.querySelectorAll(ROW_CONTROLS)) c.tabIndex = -1;
+  }
+  if (!row) return;
+  row.tabIndex = 0;
+  for (const c of row.querySelectorAll(ROW_CONTROLS)) c.tabIndex = 0;
 }
 
 export function rowFor(job) {
@@ -203,7 +227,10 @@ export function rowFor(job) {
     'data-id': job.id,
     'data-action': 'select',
     ...(selected ? { 'aria-current': 'true' } : {}),
-    tabindex: '0',
+    // ROVING TAB STOP (BUG-12): one row is in the tab order, not all 100 —
+    // with every row and its controls tabbable, reaching the pager took 300+
+    // presses. Arrow keys / j k move between rows; see setRowTabStop.
+    tabindex: '-1',
     role: 'row',
   });
 
@@ -415,9 +442,11 @@ export function nameCellFor(job) {
       title: aggregator
         ? `${title}\n\nOpens ${hostLabel(job.url)} — an aggregator listing, not the employer's own application form.`
         : title,
-      'aria-label': `${title} at ${job.company || 'company on posting'} — opens the posting in a new tab`,
-      text: shown,
-    });
+      // The accessible name is the VISIBLE text plus a hidden note, never a
+      // different string: a full title in aria-label behind a shortened one on
+      // screen failed WCAG 2.5.3 (label in name) for every long title. The
+      // full title stays in the tooltip.
+    }, shown, el('span', { class: 'sr-only', text: ` at ${job.company || 'company on posting'} (opens the posting in a new tab)` }));
     cell.append(link);
     if (aggregator) {
       // Sits on the META line, not on a line of its own under the role. It

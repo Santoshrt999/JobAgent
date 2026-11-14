@@ -39,6 +39,18 @@ describe('linkHealth — every redirect hop is validated', () => {
     expect(result.status).toBe('blocked');
   });
 
+  it('reports blocked when the connect-time guard refuses (the rebinding case the pre-check cannot see)', async () => {
+    // The pre-check resolves to a public address, but the fetch's own
+    // connect-time lookup gets a private one: a DNS answer that changed.
+    const { createSafeFetch } = await import('../../src/utils/safeFetch.js');
+    const fetchImpl = createSafeFetch({
+      lookupImpl: (_host, _options, callback) => callback(null, [{ address: '127.0.0.1', family: 4 }]),
+    });
+    const result = await checkJobLink('https://rebinding.example.com/job', { lookupImpl: publicDns, fetchImpl });
+    expect(result.status).toBe('blocked');
+    expect(result.message).toMatch(/private or local network address/);
+  });
+
   it(`caps redirects at ${MAX_REDIRECTS}`, async () => {
     let n = 0;
     const result = await checkJobLink('https://jobs.example.com/0', {

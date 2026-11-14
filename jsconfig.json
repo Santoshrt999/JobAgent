@@ -20,5 +20,23 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["src/cli/**/*.js", "src/config/**/*.js", "src/index.js"]
+  "include": ["src/cli/**/*.js", "src/config/**/*.js", "src/index.js",
+    "src/utils/safeFetch.js",
+    "src/utils/secretStore.js",
+    "src/dashboard/apiToken.js",
+    "src/logging/backup.js",
+    "src/scoring/calibration.js",
+    "src/reports/calendar.js",
+    "src/inbox/mime.js",
+    "src/inbox/classify.js",
+    "src/inbox/match.js",
+    "src/resume/claimVerifier.js",
+    "src/llm/task.js",
+    "src/apply/liveVerification.js",
+    "src/apply/letterMode.js",
+    "src/apply/letterQuality.js",
+    "src/apply/letterTailor.js",
+    "src/apply/masterLetter.js",
+    "src/resume/keepBullets.js",
+    "src/resume/resumeDiff.js"]
 }

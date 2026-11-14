@@ -37,10 +37,14 @@ Tailoring actions (all honest, content-preserving):
      rewording anything. Omissions are listed in `changes` for review.
   9. Save the result to a per-job .docx in the job's output folder.
 
-Free-form rewriting is intentionally disabled. Without a separately approved,
-claim-level evidence map, even plausible wording changes can silently invent
-scope, ownership, technologies, or metrics. This module therefore performs only
-exact-text movement and formatting changes whose provenance is auditable.
+Free-form rewriting is intentionally disabled. Without a claim-level evidence
+map, even plausible wording changes can silently invent scope, ownership,
+technologies, or metrics. This module therefore performs exact-text movement
+and formatting changes whose provenance is auditable, plus ONE narrow
+exception: ``accepted_rewrites``, bullets whose rewording was verified against
+cited master-resume lines (src/resume/claimVerifier.js) and then accepted by a
+person. Exactly those bullets change; every other unit is still checked
+byte-for-byte by the truth invariants.
 
 Every action is recorded in a structured ``changes`` list (what changed, where,
 before/after, and the evidence for why) so a human can review the tailored
@@ -75,9 +79,22 @@ _DEFAULT_PREFERRED_MARKERS = (
     "desired", "preferred qualifications", "good to have",
 )
 _QUALIFICATION_WEIGHT = {"required": 3, "preferred": 2, "unclassified": 1}
+# A role's date line. Full month names were the only form recognised, so a
+# résumé written "Jan 2020 – Present" / "Mar 2017 – Dec 2019" / "2015 – 2018"
+# had ONE detectable role (the "Present" one) and every older role's bullets
+# were counted as part of it. The page fit then treated the whole career as a
+# single role and could strip older employers down to nothing. Every common
+# form is recognised now: full and abbreviated months, MM/YYYY, and year
+# RANGES (a bare year is not enough, so "B.S., 2016" stays an education line).
+_MONTHS = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|"
+    r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?"
+)
 _EMPLOYMENT_DATE_RE = re.compile(
-    r"\b(?:january|february|march|april|may|june|july|august|september|"
-    r"october|november|december)\s+\d{4}\b|\bpresent\b",
+    rf"\b{_MONTHS}\s*[’']?\s*\d{{2,4}}\b"
+    r"|\b(?:0?[1-9]|1[0-2])\s*/\s*(?:19|20)\d{2}\b"
+    r"|\b(?:19|20)\d{2}\s*(?:-|–|—|to|until)\s*(?:(?:19|20)\d{2}|present|current|now|today)\b"
+    r"|\bpresent\b",
     re.IGNORECASE,
 )
 
@@ -434,6 +451,11 @@ _SECTION_HEADINGS = _COMPETENCY_HEADINGS | {
     "professional experience", "work experience", "experience", "employment history",
     "education", "certifications", "projects", "selected projects", "publications",
     "awards", "additional information",
+    # Secondary experience blocks. Unrecognised, "EARLIER EXPERIENCE" read as
+    # body text inside the role above it.
+    "earlier experience", "additional experience", "other experience",
+    "relevant experience", "volunteer experience", "volunteering", "leadership",
+    "honors", "honors and awards", "licenses", "training", "languages",
 }
 
 
@@ -805,6 +827,10 @@ def _is_role_heading(paragraph) -> bool:
     text = (paragraph.text or "").strip()
     if not text or _is_section_heading(text):
         return False
+    # A bullet is content, never the anchor of a role, even when it mentions a
+    # date ("Led the March 2021 migration…"). Long prose lines are the same.
+    if _is_bullet(paragraph) or len(text) > 160:
+        return False
     return bool(_EMPLOYMENT_DATE_RE.search(text))
 
 
@@ -1148,6 +1174,28 @@ def estimate_page_count(document) -> float:
     return total / metrics["usable_height"]
 
 
+# A bullet that states a measured result: a number with a unit, a currency
+# amount, a multiplier, or a count of something. These are the lines a
+# reviewer remembers ("cut month-end close from 5 days to 2"), and the old
+# fitter dropped them as readily as filler whenever they did not repeat a term
+# from the posting.
+_IMPACT_RE = re.compile(
+    r"[$€£₹]\s?\d|\d+(?:\.\d+)?\s?(?:%|percent|x\b|×|k\b|m\b|mm\b|bn?\b|million|billion|"
+    r"thousand|hours?|days?|weeks?|months?|minutes?|seconds?|users?|customers?|clients?|"
+    r"people|engineers?|teams?|records?|rows?|tb|gb|pb|countries|states|sites|stores)"
+    r"|\b(?!(?:19|20)\d{2}\b)\d{2,}[+]?(?:,\d{3})*\b",
+    re.IGNORECASE,
+)
+
+
+def _has_impact(text: str) -> bool:
+    return bool(_IMPACT_RE.search(text or ""))
+
+
+def _norm_bullet(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
 def _fit_to_pages(
     document,
     *,
@@ -1155,99 +1203,149 @@ def _fit_to_pages(
     keywords: Sequence[str],
     qualification_details: Dict[str, Dict[str, Any]],
     min_bullets_per_role: int = 1,
+    keep_bullets: Sequence[str] | None = None,
 ) -> tuple[Dict[str, Any] | None, List[str]]:
-    """Trim the résumé to `max_pages` by dropping the least relevant bullets.
+    """Trim the résumé to `max_pages` by omitting the LEAST VALUABLE bullets.
 
-    Which bullets go is a ranking, not a guess. Each candidate is scored by the
-    same JD-evidence relevance used to ORDER content, and dropped worst-first
-    from the OLDEST role forward — recent, on-target work is what a reviewer
-    reads, and a 2017 role's fourth bullet is what a two-page limit costs.
+    Value is not just keyword overlap. Each bullet is scored on three things a
+    reviewer actually weighs, and the lowest-value bullets go first:
+
+      - relevance: evidence for a requirement in THIS posting (required terms
+        outweigh preferred ones, which outweigh unclassified ones);
+      - impact: a measured result (a number, %, money, a count) is kept ahead
+        of an unmeasured duty;
+      - recency: the current role is read first and kept deepest.
 
     Guarantees:
       - No role, employer, date, section heading, summary, or competency line is
-        ever removed. The employment history stays complete and honest; only the
-        depth of detail on older roles changes.
-      - Every role keeps at least `min_bullets_per_role` bullet, so a heading is
-        never left standing alone.
-      - Whole bullets only. Nothing is shortened, reworded, or merged, so no
-        claim can change meaning.
+        ever removed, and whole bullets only: nothing is shortened or reworded.
+      - The current role's bullets that evidence a REQUIRED qualification are
+        never omitted, and neither is anything pinned with `keep_bullets`.
+      - The two most recent roles keep at least two bullets each (or all they
+        have); every other role keeps at least `min_bullets_per_role`.
+      - When the budget cannot be met within those rules the résumé is left
+        LONGER rather than thinner, and a limitation says so: losing a real,
+        relevant achievement costs more than a third page.
     """
     if max_pages <= 0 or estimate_page_count(document) <= max_pages:
         return None, []
 
-    roles: List[List[Any]] = []
-    current: List[Any] | None = None
+    pinned = {_norm_bullet(text) for text in (keep_bullets or []) if str(text or "").strip()}
+    roles: List[Dict[str, Any]] = []
+    current: Dict[str, Any] | None = None
+    previous_line = ""
     for paragraph in document.paragraphs:
+        text = (paragraph.text or "").strip()
         if _is_role_heading(paragraph):
-            current = []
+            # Name the role by its title line when the dates sit on their own
+            # line under it ("Senior Engineer | Contoso" then "Remote | 2020 -
+            # Present"), so an omission can say which job it came from.
+            label = f"{previous_line} | {text}" if previous_line and not _EMPLOYMENT_DATE_RE.search(previous_line) else text
+            current = {"heading": label, "bullets": []}
             roles.append(current)
+            previous_line = ""
             continue
+        if text and not _is_bullet(paragraph) and not _is_section_heading(text):
+            previous_line = text
+        elif text:
+            previous_line = ""
         if current is None:
             continue
         if _is_section_heading(paragraph.text):
             current = None
             continue
         if _is_bullet(paragraph) and (paragraph.text or "").strip():
-            current.append(paragraph)
+            current["bullets"].append(paragraph)
 
-    # Oldest role first; within a role, least JD-relevant bullet first.
-    candidates: List[Any] = []
-    for role_bullets in reversed(roles):
-        droppable = len(role_bullets) - min_bullets_per_role
-        if droppable <= 0:
-            continue
-        ranked = sorted(
-            enumerate(role_bullets),
-            key=lambda pair: (
-                _relevance_key(_matches_for_text(pair[1].text, keywords, qualification_details)),
-                -pair[0],
-            ),
+    total_roles = len(roles)
+    candidates: List[tuple] = []
+    for role_index, role in enumerate(roles):
+        bullets = role["bullets"]
+        floor = min(len(bullets), 2) if role_index < 2 else min(len(bullets), max(1, min_bullets_per_role))
+        recency = {0: 4, 1: 2, 2: 1}.get(role_index, 0)
+        scored = []
+        for position, paragraph in enumerate(bullets):
+            text = paragraph.text or ""
+            evidence = _matches_for_text(text, keywords, qualification_details)
+            relevance = _relevance_key(evidence)
+            impact = _has_impact(text)
+            # The current role's evidence for a REQUIRED qualification is what
+            # this application stands on; older required evidence is ranked
+            # high but can still go when the budget demands it.
+            protected = _norm_bullet(text) in pinned or (
+                role_index == 0 and relevance[0] >= _QUALIFICATION_WEIGHT["required"]
+            )
+            value = relevance[0] * 4 + min(relevance[1], 6) + (3 if impact else 0) + recency
+            scored.append({
+                "paragraph": paragraph, "value": value, "protected": protected, "impact": impact,
+                "terms": [item["keyword"] for item in evidence], "position": position,
+            })
+        # Only the lowest-value bullets above the role's floor are candidates.
+        droppable = sorted(
+            (item for item in scored if not item["protected"]),
+            key=lambda item: (item["value"], -item["position"]),
         )
-        candidates.extend(paragraph for _index, paragraph in ranked[:droppable])
+        removable = max(0, len(bullets) - floor)
+        for item in droppable[:removable]:
+            # Older roles go first on ties; within a role, the later bullet.
+            candidates.append((item["value"], -(total_roles - role_index), -item["position"], role, item))
+    candidates.sort(key=lambda entry: entry[:3])
 
     dropped: List[Dict[str, Any]] = []
-    for paragraph in candidates:
+    for _value, _age, _pos, role, item in candidates:
         if estimate_page_count(document) <= max_pages:
             break
+        paragraph = item["paragraph"]
         raw = paragraph.text or ""
         _remove_paragraph(paragraph)
+        reasons = []
+        reasons.append("matches no requirement in this posting" if not item["terms"]
+                       else f"only matches {', '.join(item['terms'][:3])}")
+        if not item["impact"]:
+            reasons.append("states no measured result")
         dropped.append({
             "text": raw.strip(),
             # The exact content-unit key, so the invariant can account for this
             # removal byte-for-byte even when the bullet had stray whitespace.
             "unit": f"paragraph:{raw}",
-            "reason": "lowest JD relevance in the oldest role still over budget",
+            "role": role["heading"][:160],
+            "has_metric": item["impact"],
+            "jd_terms": item["terms"],
+            "reason": "; ".join(reasons),
         })
 
+    estimated = estimate_page_count(document)
     if not dropped:
         return None, [
-            f"The résumé is longer than {max_pages} page(s) and could not be trimmed further "
-            "without leaving a role with no detail at all. Shorten bullets in the master resume."
+            f"The résumé is an estimated {estimated:.1f} pages, over the {max_pages}-page target. "
+            "Nothing was left out: every remaining bullet is recent, measured, or evidences a "
+            "requirement of this posting. Shorten wording in the master resume if length matters."
         ]
 
     limitations: List[str] = []
-    estimated = estimate_page_count(document)
     if estimated > max_pages:
         limitations.append(
-            f"Still an estimated {estimated:.1f} pages after dropping {len(dropped)} bullet(s): "
-            "every remaining role is down to its last bullet. Trim the master resume itself."
+            f"Still an estimated {estimated:.1f} pages after leaving out {len(dropped)} bullet(s). "
+            "The rest were kept on purpose (recent, measured, or required by this posting)."
         )
     return {
         "type": "fit_to_page_budget",
         "where": "PROFESSIONAL EXPERIENCE bullets",
         "before": f"content estimated at more than {max_pages} page(s)",
-        "after": f"{len(dropped)} least-relevant bullet(s) omitted; estimated {estimated:.1f} page(s)",
+        "after": f"{len(dropped)} lowest-value bullet(s) omitted; estimated {estimated:.1f} page(s)",
         "evidence": [{
             "max_pages": max_pages,
             "omitted": dropped,
             "roles_kept": len(roles),
             "min_bullets_per_role": min_bullets_per_role,
+            "pinned": len(pinned),
             "text_changed": False,
         }],
         "reason": (
-            f"a {max_pages}-page résumé is the target; whole low-relevance bullets from the "
-            "oldest roles are omitted rather than any claim being shortened or reworded, and "
-            "every role keeps its heading, dates, and at least one bullet"
+            f"a {max_pages}-page résumé is the target; the bullets omitted are the ones with the "
+            "least relevance to this posting, no measured result, and the oldest role. Nothing "
+            "was shortened or reworded, required-skill evidence is never omitted, and every "
+            "role keeps its heading, dates, and detail"
         ),
         "source": "master_resume",
     }, limitations
@@ -1947,13 +2045,155 @@ def _verify_layout_invariants(
         "section_headings_intact": bool(headings) or not omitted,
         "no_manual_page_breaks": not manual_breaks,
         "estimated_pages": round(estimated, 2),
-        "within_page_budget": estimated <= max_pages,
+        "within_page_budget": max_pages <= 0 or estimated <= max_pages,
         "roles_without_detail": orphan_roles,
     }
     if not (only_declared_removals and nothing_added and not manual_breaks):
         failed = [key for key, value in invariants.items() if value is False]
         raise RuntimeError("layout invariant failed before save: " + ", ".join(failed))
     return invariants
+
+
+def docx_to_html(docx_path: str | Path) -> Dict[str, Any]:
+    """An ATS-safe HTML rendering of a resume, for printing to PDF (P2-3).
+
+    One column of real text: section headings become <h2>, role lines <h3>,
+    bullets <li>, everything else <p>; bold runs stay bold. No tables, images,
+    headers or footers. Returns the HTML and the paragraph texts it contains,
+    so the caller can check the rendered page holds every one of them.
+    """
+    import html as html_lib
+    from docx import Document
+
+    document = Document(str(docx_path))
+    parts: List[str] = []
+    texts: List[str] = []
+    in_list = False
+
+    def runs_html(paragraph) -> str:
+        out = []
+        for run in paragraph.runs:
+            text = html_lib.escape(run.text or "")
+            if not text:
+                continue
+            out.append(f"<strong>{text}</strong>" if run.bold else text)
+        return "".join(out) or html_lib.escape(paragraph.text or "")
+
+    for paragraph in document.paragraphs:
+        text = (paragraph.text or "").strip()
+        if not text:
+            continue
+        texts.append(text)
+        bullet = _is_bullet(paragraph)
+        if bullet and not in_list:
+            parts.append("<ul>")
+            in_list = True
+        if not bullet and in_list:
+            parts.append("</ul>")
+            in_list = False
+        body = runs_html(paragraph)
+        if bullet:
+            item = re.sub(r"^[•·▪◦]\s+", "", body)
+            parts.append(f"<li>{item}</li>")
+        elif _is_section_heading(text):
+            parts.append(f"<h2>{body}</h2>")
+        elif _is_role_heading(paragraph):
+            parts.append(f"<h3>{body}</h3>")
+        else:
+            parts.append(f"<p>{body}</p>")
+    if in_list:
+        parts.append("</ul>")
+    style = (
+        "@page{size:Letter;margin:0.55in 0.6in}"
+        "body{font-family:Calibri,Carlito,Arial,Helvetica,sans-serif;font-size:10.5pt;line-height:1.3;color:#000}"
+        "h2{font-size:11.5pt;margin:10pt 0 3pt;border-bottom:1px solid #000;text-transform:uppercase;break-after:avoid}"
+        "h3{font-size:10.5pt;margin:6pt 0 2pt;break-after:avoid}"
+        "p{margin:0 0 3pt}ul{margin:0 0 4pt;padding-left:16pt}li{margin:0 0 2pt}"
+    )
+    title = html_lib.escape(texts[0] if texts else "Resume")
+    html = (
+        f"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{title}</title>"
+        f"<style>{style}</style></head><body>{''.join(parts)}</body></html>"
+    )
+    return {"html": html, "texts": texts}
+
+
+def master_units(master_path: str | Path) -> List[Dict[str, Any]]:
+    """The master resume's paragraphs as stable, citable evidence units.
+
+    Each non-empty paragraph gets an id ``u<n>`` (its position among non-empty
+    paragraphs), its exact text, its kind (``bullet``, ``role``, ``section`` or
+    ``paragraph``) and the role heading it sits under. The grounded-rewrite
+    layer (src/resume/rewrites.js) cites these ids as evidence; ids stay the
+    same for as long as the master resume does.
+    """
+    from docx import Document
+
+    document = Document(str(master_path))
+    units: List[Dict[str, Any]] = []
+    role = None
+    for paragraph in document.paragraphs:
+        text = (paragraph.text or "").strip()
+        if not text:
+            continue
+        if _is_section_heading(text):
+            kind = "section"
+            role = None
+        elif _is_role_heading(paragraph):
+            kind = "role"
+            role = text
+        elif _is_bullet(paragraph):
+            kind = "bullet"
+        else:
+            kind = "paragraph"
+        units.append({"id": f"u{len(units)}", "text": paragraph.text, "kind": kind, "role": role})
+    return units
+
+
+def _apply_accepted_rewrites(
+    document, rewrites: Sequence[Dict[str, Any]] | None
+) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """Replace the text of exactly the bullets a person accepted.
+
+    Each rewrite names the master's ``original`` text, the ``rewrite`` that was
+    verified against cited master-resume evidence and then accepted by a
+    person, and that evidence. A rewrite is applied only when ``original``
+    matches exactly one bullet paragraph; anything else is skipped and
+    reported. The first run keeps its formatting and takes the new text.
+    Returns the change records and {original_unit: rewritten_unit} so the
+    truth invariant can expect these units, and only these, to differ.
+    """
+    changes: List[Dict[str, Any]] = []
+    replaced: Dict[str, str] = {}
+    for item in rewrites or []:
+        original = str(item.get("original") or "")
+        rewrite = str(item.get("rewrite") or "").strip()
+        if not original or not rewrite or rewrite == original:
+            continue
+        matches = [p for p in document.paragraphs if p.text == original and _is_bullet(p)]
+        if len(matches) != 1:
+            changes.append({
+                "type": "rewrite_skipped", "where": "experience", "before": original, "after": None,
+                "reason": "the original bullet is no longer in the master resume exactly once",
+                "evidence": item.get("evidence") or [], "source": "accepted_rewrite",
+            })
+            continue
+        paragraph = matches[0]
+        runs = paragraph.runs
+        if runs:
+            runs[0].text = rewrite
+            for run in runs[1:]:
+                run.text = ""
+        else:
+            paragraph.add_run(rewrite)
+        replaced[f"paragraph:{original}"] = f"paragraph:{paragraph.text}"
+        changes.append({
+            "type": "rewrite", "where": "experience", "before": original, "after": paragraph.text,
+            "reason": "verified against the cited master-resume evidence and accepted by you",
+            "evidence": item.get("evidence") or [], "source": "accepted_rewrite",
+            "task": item.get("task"),
+        })
+    return changes, replaced
 
 
 def tailor_resume(
@@ -1972,12 +2212,16 @@ def tailor_resume(
     now: datetime | None = None,
     output_name: str | None = None,
     llm_qualifications: Dict[str, Sequence[str]] | None = None,
+    accepted_rewrites: Sequence[Dict[str, Any]] | None = None,
+    keep_bullets: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     """Create a tailored resume for ``job`` and return a result dict.
 
     The function may reorder exact existing content and change emphasis. It
-    never rewrites claims. ``enable_rewrites`` is accepted only so callers get
-    an explicit policy response; it does not enable an unsafe implementation.
+    never rewrites claims on its own: the only reworded text it writes is
+    ``accepted_rewrites`` (evidence-verified and accepted by a person).
+    ``enable_rewrites`` is accepted only so callers get an explicit policy
+    response; it does not enable free-form rewriting.
 
     Returns the output path plus qualification audit, selected content,
     provenance records, gaps, rewrite policy, and verified invariants.
@@ -2013,12 +2257,16 @@ def tailor_resume(
     # Open the master read-only: we load it, mutate the in-memory copy, and save
     # to a NEW path. The master file on disk is never written.
     document = Document(str(master_path))
+    # Accepted, evidence-verified rewrites (P1-2) are applied first, and the
+    # invariant baseline is updated for exactly those units: every other unit
+    # must still survive byte-for-byte, and these must be the accepted text.
+    rewrite_changes, rewritten_units = _apply_accepted_rewrites(document, accepted_rewrites)
     source_units = _content_units(document)
     source_nodes = [paragraph._p for paragraph in document.paragraphs]
     source_styles = {
         paragraph._p: paragraph.style.name or "" for paragraph in document.paragraphs
     }
-    changes: List[Dict[str, Any]] = []
+    changes: List[Dict[str, Any]] = list(rewrite_changes)
 
     content_changes, selected_content, movable_nodes = _prioritize_existing_content(
         document, audit["present"], qualification_details
@@ -2064,6 +2312,9 @@ def tailor_resume(
     focus_line_inserted = False
     limitations = [
         (
+            f"{len([c for c in rewrite_changes if c['type'] == 'rewrite'])} bullet(s) use a rewording you "
+            "accepted, each verified against cited lines of your master resume; nothing else was reworded."
+            if any(c["type"] == "rewrite" for c in rewrite_changes) else
             "Free-form bullet and summary rewriting is disabled: no approved claim-level "
             "evidence map is available. Tailoring is limited to exact-text reordering and "
             "format emphasis."
@@ -2166,16 +2417,22 @@ def tailor_resume(
         key=lambda gap: -_QUALIFICATION_WEIGHT.get(gap["qualification"], 1)
     )
 
+    applied_rewrites = [c for c in rewrite_changes if c["type"] == "rewrite"]
     rewrite_policy = {
-        "mode": "disabled",
+        "mode": "evidence_accepted" if applied_rewrites else "disabled",
         "requested": bool(enable_rewrites),
-        "applied": 0,
+        "applied": len(applied_rewrites),
         "reason": (
+            "Only bullets whose rewrite was verified against cited master-resume evidence and "
+            "accepted by a person were changed; every other unit is preserved exactly."
+            if applied_rewrites else
             "Claim rewriting requires an approved claim-level evidence map; none is accepted "
             "by this deterministic tailor."
         ),
     }
-    if enable_rewrites:
+    if applied_rewrites:
+        rewrite_policy["rewritten_units"] = len(rewritten_units)
+    if enable_rewrites and not applied_rewrites:
         limitations.append(
             "A rewrite was requested but deliberately not performed because supported rewriting is unavailable."
         )
@@ -2208,6 +2465,7 @@ def tailor_resume(
         max_pages=max_pages,
         keywords=audit["present"],
         qualification_details=qualification_details,
+        keep_bullets=keep_bullets,
     )
     if fit_change:
         changes.append(fit_change)

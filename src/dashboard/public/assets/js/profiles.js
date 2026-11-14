@@ -10,9 +10,13 @@
 
 import { $, el, toast } from './dom.js';
 import { api, postJson } from './api.js';
-import { closeDialog, openDialog } from './dialogs.js';
+import { closeDialog, guardDialog, openDialog } from './dialogs.js';
+import { formIsDirty, markClean, saveOnlyOnPurpose, withLabel } from './forms.js';
+import { validateEmail, validateFullName, validateRoles } from './validate.js';
 import { scheduleRefresh } from './mutations.js';
+import { clearSelection } from './selection.js';
 import { displayName, initials } from './format.js';
+import { closeMainMenu } from './menus.js';
 
 /** The name to show for a listing row, falling back to its label without the " — search" suffix. */
 export function profileName(p) {
@@ -79,28 +83,33 @@ export function renderProfileMenu(listing) {
   const host = $('profileMenuItems');
   if (!host) return;
   const rows = describeProfiles(listing);
-  // Always shown once there is a profile: "Add profile…" sits under the people,
-  // so adding the second person is as findable as switching to them.
-  const show = rows.length > 0;
-  host.replaceChildren();
-  $('profileMenuLabel').hidden = !show;
-  if (show) {
-    for (const p of rows) {
-      host.append(el('button', {
-        type: 'button', role: 'menuitemradio', class: 'pf-menuitem',
-        'aria-checked': String(p.active), 'data-action': 'activate-search-profile', 'data-profile-id': p.id,
-        disabled: !p.ready && !p.active,
-        title: p.ready ? '' : 'This profile has no job titles yet, so it cannot search',
-      },
-      el('span', { class: 'pf-avatar', 'aria-hidden': 'true', text: initials(p.display) || '?' }),
-      el('span', { class: 'pf-mi-text' },
-        el('span', { class: 'pf-mi-name', text: p.display }),
-        el('span', { class: 'pf-mi-sub', text: p.active ? 'Active' : profileSubline(p) }))));
+  // One row per person, the active one first-class and ticked. Each other
+  // person carries a quiet remove button (and the Delete key does the same),
+  // so removing lives WITH the person instead of as a separate menu item that
+  // then asks "who?". Removing opens the same confirm dialog, preselected.
+  host.replaceChildren(...rows.map((p) => {
+    const row = el('div', { class: `pf-mi-row${p.active ? ' is-active' : ''}`, role: 'none' });
+    row.append(el('button', {
+      type: 'button', role: 'menuitemradio', class: 'pf-menuitem',
+      'aria-checked': String(p.active), 'data-action': 'activate-search-profile', 'data-profile-id': p.id,
+      disabled: !p.ready && !p.active,
+      ...(p.active ? {} : { 'aria-keyshortcuts': 'Delete' }),
+      title: p.ready ? (p.active ? `Searching as ${p.display}` : `Switch to ${p.display}`) : 'This profile has no job titles yet, so it cannot search',
+    },
+    el('span', { class: 'pf-avatar', 'aria-hidden': 'true', text: initials(p.display) || '?' }),
+    el('span', { class: 'pf-mi-text' },
+      el('span', { class: 'pf-mi-name', text: p.display }),
+      el('span', { class: 'pf-mi-sub', text: profileSubline(p) })),
+    p.active ? checkIcon() : null));
+    if (!p.active) {
+      row.append(el('button', {
+        type: 'button', class: 'pf-mi-remove', tabindex: '-1',
+        'data-action': 'delete-search-profile', 'data-profile-id': p.id,
+        'aria-label': `Remove ${p.display}…`, title: `Remove ${p.display}…`,
+      }, removeIcon()));
     }
-  }
-  // "Remove profile…" once there is someone besides the active person.
-  const remove = document.querySelector('.pf-remove-item');
-  if (remove) remove.hidden = rows.filter((p) => !p.active).length === 0;
+    return row;
+  }));
   const active = rows.find((p) => p.active);
   // Who the empty states and titles speak to ("No jobs yet for Morgan").
   document.body.dataset.person = active?.display ?? '';
@@ -147,6 +156,9 @@ export async function switchProfile(id, { quiet = false } = {}) {
   if (!id || id === before) return;
   const r = await postJson('/api/search-profiles/activate', { id });
   if (r.workspaceChanged) { reloadAsNewPerson(r.label, quiet ? null : before); return; }
+  // Same database, different person: a bulk selection made for the previous
+  // person must not carry over to the next one's actions.
+  clearSelection();
   scheduleRefresh(0);
   await afterChange();
   announceSwitch(r.label, quiet ? null : before);
@@ -162,6 +174,9 @@ const SWITCHED_KEY = 'jobagent.switched';
  */
 export function reloadAsNewPerson(label, previousId, note = '') {
   try { sessionStorage.setItem(SWITCHED_KEY, JSON.stringify({ label, previousId, note })); } catch { /* storage off: no notice, still correct */ }
+  // The open job (#job=…) is the previous person's: booting the next person's
+  // workspace with it asked their database for a job it does not have.
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
   location.reload();
 }
 
@@ -285,10 +300,78 @@ export async function removePerson() {
 /* ─────────────────────── add or edit a person ─────────────────────── */
 
 const form = {
-  mode: 'add', id: null, roles: [], resumeBase64: null, phone: '',
+  mode: 'add', id: null, roles: [], resumeBase64: null, phone: '', rolesInitial: '[]',
 };
 
 const MAX_ROLES = 15;
+
+/**
+ * Is there anything typed here that Save has not stored? The boxes are judged
+ * by the browser (value vs the value they were filled with); the job-title
+ * chips are not boxes, so they are compared to how they started; and a resume
+ * the person picked is data too.
+ */
+function personIsDirty() {
+  return formIsDirty($('dlgPerson'))
+    || JSON.stringify(form.roles) !== form.rolesInitial
+    || form.resumeBase64 !== null;
+}
+guardDialog($('dlgPerson'), personIsDirty);
+// Enter in a box must not save and close this dialog; Ctrl/Cmd+Enter does.
+saveOnlyOnPurpose($('dlgPerson').querySelector('form'));
+
+/** What Save is waiting for, in the words used on the button's explanation. */
+const SAVE_NEEDS = { Name: 'a first and last name', Email: 'a valid email', Roles: 'at least one job title' };
+const FIELD_OF = { personName: 'Name', personEmail: 'Email', personRoleInput: 'Roles' };
+
+const joinWords = (items) => (items.length < 2 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+
+/**
+ * What is wrong with the form right now, by field ({} = ready to save).
+ * A job title typed but not yet turned into a chip already counts: Save would add it.
+ */
+function personProblems() {
+  const roles = [...form.roles];
+  for (const raw of $('personRoleInput').value.split(/[,\n;]/)) {
+    const role = raw.replace(/\s+/g, ' ').trim();
+    if (role && !roles.some((r) => r.toLowerCase() === role.toLowerCase())) roles.push(role);
+  }
+  const found = {
+    Name: validateFullName($('personName').value),
+    Email: validateEmail($('personEmail').value),
+    Roles: validateRoles(roles),
+  };
+  return Object.fromEntries(Object.entries(found).filter(([, message]) => message));
+}
+
+/**
+ * Save is off until it can succeed, and the footer says why. Computed silently
+ * on every change, because it is an explanation, not an error: the red messages
+ * under the fields wait until the person leaves a field (see the listeners).
+ */
+function refreshPersonSave() {
+  const missing = Object.keys(personProblems()).map((key) => SAVE_NEEDS[key]);
+  let why = '';
+  if (missing.length) why = `Save is off until you add ${joinWords(missing)}.`;
+  else if (form.mode === 'edit' && !personIsDirty()) why = 'No changes to save yet.';
+  $('personSave').disabled = Boolean(why);
+  $('personSaveWhy').textContent = why;
+}
+
+// Typing never ADDS an error; it only clears one that has been fixed.
+$('dlgPerson').addEventListener('input', () => {
+  const problems = personProblems();
+  for (const key of Object.values(FIELD_OF)) {
+    if (!problems[key] && !$(`person${key}Error`).hidden) setFieldError(key, '');
+  }
+  refreshPersonSave();
+});
+$('dlgPerson').addEventListener('change', refreshPersonSave);
+// A problem is shown when the person LEAVES the field.
+$('dlgPerson').addEventListener('focusout', (event) => {
+  const key = FIELD_OF[event.target.id];
+  if (key) setFieldError(key, personProblems()[key] ?? '');
+});
 
 function renderRoleChips() {
   const list = $('personRoleList');
@@ -300,6 +383,7 @@ function renderRoleChips() {
         'aria-label': `Remove ${role}`, title: `Remove ${role}`,
       }, '×')));
   }
+  refreshPersonSave();
 }
 
 /** Add one or several (comma- or line-separated) titles, keeping order and dropping repeats. */
@@ -329,7 +413,13 @@ function setFieldError(key, message) {
   input?.setAttribute('aria-invalid', String(Boolean(message)));
 }
 
-function fillForm(values = {}) {
+/**
+ * @param {object} [values]
+ * @param {{ pristine?: boolean }} [options] `pristine` (the default) says these values ARE
+ *   the stored ones, so only later typing is an edit. Values read from a resume are
+ *   not stored yet, so that caller passes false and they count as unsaved.
+ */
+function fillForm(values = {}, { pristine = true } = {}) {
   $('personName').value = displayName(values.fullName ?? '');
   $('personEmail').value = values.email ?? '';
   $('personCity').value = values.city ?? '';
@@ -344,6 +434,11 @@ function fillForm(values = {}) {
   form.phone = values.phone ?? '';
   addRoles((values.targetRoles ?? []).join(','));
   for (const key of ['Name', 'Email', 'Roles', 'Form']) setFieldError(key, '');
+  if (pristine) {
+    markClean($('dlgPerson'));
+    form.rolesInitial = JSON.stringify(form.roles);
+  }
+  refreshPersonSave();
 }
 
 /** Open the form to add a person (optionally pre-filled from a resume already in hand). */
@@ -414,7 +509,7 @@ export async function readResumeIntoForm(file) {
       fullName: typed.fullName || r.fields.fullName,
       email: typed.email || r.fields.email,
       targetRoles: [...form.roles, ...(r.fields.targetRoles ?? [])],
-    });
+    }, { pristine: false });
     const found = [r.found.roles && `${r.found.roles} job title${r.found.roles === 1 ? '' : 's'}`,
       r.found.jobs && `${r.found.jobs} past job${r.found.jobs === 1 ? '' : 's'}`].filter(Boolean).join(' and ');
     status.textContent = found ? `Read ${found} from ${file.name}. Check them below.` : `Read ${file.name}. No job titles found; add them below.`;
@@ -436,16 +531,27 @@ export async function savePerson() {
     ...(form.allowDuplicate ? { allowDuplicate: true } : {}),
   };
   for (const key of ['Name', 'Email', 'Roles', 'Form']) setFieldError(key, '');
+  // Save is off while these are wrong, but the form can still be submitted by
+  // code or a stray event; say what is wrong and put the cursor on it.
+  const problems = personProblems();
+  const firstProblem = Object.keys(problems)[0];
+  if (firstProblem) {
+    for (const [key, message] of Object.entries(problems)) setFieldError(key, message);
+    (firstProblem === 'Roles' ? $('personRoleInput') : $(`person${firstProblem}`))?.focus();
+    return;
+  }
   const before = listingCache?.activeId ?? null;
   try {
-    const r = form.mode === 'add'
-      ? await postJson('/api/search-profiles', {
+    const send = () => (form.mode === 'add'
+      ? postJson('/api/search-profiles', {
         fields, activate: $('personActivate').checked, seed: !$('personSeedRow').hidden && $('personSeed').checked,
         ...(form.resumeBase64 ? { resume: { contentBase64: form.resumeBase64 } } : {}),
       })
-      : await api(`/api/search-profiles/${encodeURIComponent(form.id)}`, {
+      : api(`/api/search-profiles/${encodeURIComponent(form.id)}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fields }),
-      });
+      }));
+    // The wording shows the save is under way; the typed values stay put whatever happens.
+    const r = await withLabel($('personSave'), 'Saving…', send);
     const { closeDialog } = await import('./dialogs.js');
     closeDialog($('dlgPerson'));
     const seededNote = seedNote(r.seeded);
@@ -484,7 +590,7 @@ export async function savePerson() {
 $('personRoleInput')?.addEventListener('keydown', (event) => {
   const input = event.target;
   if (event.key === 'Enter' || event.key === ',') {
-    if (!input.value.trim()) return; // an empty Enter submits the form
+    if (!input.value.trim()) return; // an empty Enter does nothing (see saveOnlyOnPurpose)
     event.preventDefault();
     addRoles(input.value);
     input.value = '';
@@ -506,3 +612,29 @@ export function addAnyway() {
   form.allowDuplicate = true;
   return savePerson();
 }
+
+/** The tick on the active person's row. */
+function checkIcon() {
+  const svg = el('svg', { class: 'ic pf-mi-check', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' });
+  svg.append(el('path', { d: 'm5 12.5 4.5 4.5L19 7.5' }));
+  return svg;
+}
+
+/** The quiet remove on every other person's row. */
+function removeIcon() {
+  const svg = el('svg', { class: 'ic', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' });
+  svg.append(el('path', { d: 'M7 7l10 10M17 7 7 17' }));
+  return svg;
+}
+
+/* Delete (or Backspace) on another person's row removes them, through the
+   same confirm dialog as the row's remove button. Keyboard users get the
+   action without a second stop on every row. */
+$('accountMenu')?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+  const item = event.target.closest?.('.pf-menuitem[aria-checked="false"]');
+  if (!item) return;
+  event.preventDefault();
+  closeMainMenu();
+  openRemoveProfile(item.dataset.profileId);
+});

@@ -42,6 +42,8 @@ describe('dbMaintenance — retention', () => {
     const down = async () => { throw new Error('ECONNREFUSED'); };
     expect(await unsafeToWriteReason({ root, fetchImpl: down })).toBeNull();
     expect(await unsafeToWriteReason({ root, fetchImpl: async () => ({ ok: true }) })).toMatch(/dashboard is running/);
+    // A locked dashboard (access token, P1-5) answers 401 but still holds the database.
+    expect(await unsafeToWriteReason({ root, fetchImpl: async () => ({ ok: false, status: 401 }) })).toMatch(/dashboard is running/);
     mkdirSync(join(root, 'data'));
     writeFileSync(join(root, 'data', '.run.lock'), JSON.stringify({ pid: process.pid, owner: 'cli', phase: 'watch' }));
     expect(await unsafeToWriteReason({ root, fetchImpl: down })).toMatch(/holds data\/\.run\.lock/);

@@ -84,11 +84,11 @@
       if (type === 'file') {
         const kind = /cover/i.test(label) ? 'cover-letter' : /resume|résumé|cv/i.test(label) ? 'resume' : null;
         if (!kind || (kind === 'resume' && resumeUsed) || (kind === 'cover-letter' && coverUsed)) {
-          if (el.required) blockers.push(`Select required file manually: ${label}`);
+          if (isRequired(el)) blockers.push(`Select required file manually: ${label}`);
           continue;
         }
         const artifact = kind === 'resume' ? payload.artifacts.resume : payload.artifacts.coverLetter;
-        if (!artifact?.available) { if (el.required) blockers.push(`Approved packet has no file for: ${label}`); continue; }
+        if (!artifact?.available) { if (isRequired(el)) blockers.push(`Approved packet has no file for: ${label}`); continue; }
         try {
           await attach(el, payload.job.id, kind, artifact.name);
           kind === 'resume' ? (resumeUsed = true) : (coverUsed = true);
@@ -105,7 +105,7 @@
         // the local pattern match — including a decision to leave it alone.
         const decision = decisions.get(norm(label));
         if (decision?.action === 'ask_user') {
-          if (el.required) blockers.push(`Required field needs your answer: ${label}`);
+          if (isRequired(el)) blockers.push(`Required field needs your answer: ${label}`);
           mark(el, 'review');
           continue;
         }
@@ -117,7 +117,7 @@
         }
       }
       if (value == null || String(value).trim() === '') {
-        if (el.required) { blockers.push(`Required field needs your answer: ${label}`); mark(el, 'review'); }
+        if (isRequired(el)) { blockers.push(`Required field needs your answer: ${label}`); mark(el, 'review'); }
         continue;
       }
 
@@ -125,8 +125,7 @@
       if (result.ok) { filled.push({ field: canonical || 'screening', label, source }); mark(el, 'filled'); }
       else { blockers.push(`${label}: ${result.reason}`); mark(el, 'review'); }
     }
-    const requiredMissing = [...applicationRoot.querySelectorAll('input[required], textarea[required], select[required]')]
-      .filter((el) => visible(el) && !controlHasValue(el))
+    const requiredMissing = missingRequired(applicationRoot)
       .map((el) => labelFor(el) || el.name || 'required field');
     for (const label of requiredMissing) blockers.push(`Required field needs review: ${label}`);
     const finalSubmitVisible = [...applicationRoot.querySelectorAll('button, input[type="submit"], [role="button"]')]
@@ -187,6 +186,48 @@
     if (type === 'checkbox' || type === 'radio') return Boolean(el.checked);
     if (type === 'file') return Boolean(el.files?.length);
     return String(el.value || '').trim().length > 0;
+  }
+
+  // REQUIRED, the way modern application forms say it. Greenhouse, Ashby,
+  // Lever, Workday and LinkedIn render custom selects and radio groups that
+  // carry aria-required="true" and no native `required`, so checking only
+  // [required] reported "ready for review" with required answers still empty.
+  function isRequired(el) {
+    return Boolean(el.required) || el.getAttribute('aria-required') === 'true'
+      || Boolean(el.closest('[aria-required="true"]'));
+  }
+  function missingRequired(root) {
+    const found = [];
+    for (const el of root.querySelectorAll('input[required], textarea[required], select[required], [aria-required="true"]')) {
+      if (found.some((outer) => outer.contains(el))) continue; // one widget, reported once
+      const type = String(el.type || '').toLowerCase();
+      if (type === 'hidden' || !visible(el)) continue;
+      if (!widgetHasValue(el)) found.push(el);
+    }
+    return found;
+  }
+  function widgetHasValue(el) {
+    const tag = el.tagName.toLowerCase();
+    const role = String(el.getAttribute('role') || '').toLowerCase();
+    if (role === 'radiogroup' || role === 'group' || tag === 'fieldset') {
+      return Boolean(el.querySelector('input:checked, [role="radio"][aria-checked="true"], [role="checkbox"][aria-checked="true"]'));
+    }
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+      if (controlHasValue(el)) return true;
+      return role === 'combobox' && comboHasSelection(el);
+    }
+    const inner = el.querySelector('input:not([type="hidden"]), textarea, select');
+    if (inner && controlHasValue(inner)) return true;
+    return comboHasSelection(el);
+  }
+  // A custom select shows its choice beside an empty search input: a hidden
+  // input with the value, a "single value" element, or a selected option.
+  function comboHasSelection(el) {
+    if (String(el.getAttribute('aria-valuetext') || '').trim()) return true;
+    const box = el.closest('[class*="select" i], [class*="combobox" i], [class*="dropdown" i]') || el.parentElement;
+    if (!box) return false;
+    if ([...box.querySelectorAll('input[type="hidden"]')].some((h) => String(h.value || '').trim())) return true;
+    return Boolean(box.querySelector('[class*="single-value" i], [class*="singlevalue" i], [class*="multi-value" i], [aria-selected="true"]'));
   }
 
   function findApplicationRoot() {

@@ -3,11 +3,12 @@
 import { $, el, toast, withBusy } from './dom.js';
 import { state } from './state.js';
 import { api, postJson } from './api.js';
+import { shiftViewCount } from './analytics.js';
 import { statusLabel } from './board.js';
 import { DECISION_REASONS, reasonLabel, renderDetail, verdictLabel } from './detail.js';
 import { confirmAction, openDialog } from './dialogs.js';
 import { scheduleRefresh } from './mutations.js';
-import { autofillBlockedReason } from './today.js';
+import { autofillBlockedReason, prepareBlockedNotice } from './today.js';
 import { pollRun } from './runs.js';
 import { closeMenu } from './menus.js';
 import { bulkStepReasons, primaryBulkStep } from './bulk.js';
@@ -41,11 +42,32 @@ const STEP_ACTIONS = {
 
 let lastAnnounced = 0;
 
+/**
+ * Open or close the toolbar without moving the row being worked on.
+ *
+ * The toolbar takes 44px above the table only while rows are ticked, so
+ * opening it pushes every row down. Measured against the row that has focus
+ * (the one just ticked) or the first row on screen, the page is scrolled by
+ * exactly that shift: the clicked checkbox stays under the pointer. On a phone
+ * the bar is fixed, nothing shifts, and this scrolls by 0.
+ */
+function keepRowStill(change) {
+  const rows = $('rows');
+  const anchor = document.activeElement?.closest?.('#rows tr.job')
+    ?? [...rows.querySelectorAll('tr.job')].find((tr) => tr.getBoundingClientRect().bottom > 0);
+  const before = anchor?.getBoundingClientRect().top;
+  change();
+  if (anchor == null || before == null) return;
+  const shift = anchor.getBoundingClientRect().top - before;
+  if (shift) window.scrollBy({ top: shift, behavior: 'instant' });
+}
+
 export function syncSelectionBar() {
   const n = state.selected.size;
   const bar = $('selbar');
   $('selCount').textContent = `${n} selected`;
-  bar.dataset.open = String(n > 0);
+  const open = String(n > 0);
+  if (bar.dataset.open !== open) keepRowStill(() => { bar.dataset.open = open; });
   if (n === 0) closeMenu($('bulkMenu'));
 
   const jobs = [...state.selected].map((id) => state.known.get(id)).filter(Boolean);
@@ -108,9 +130,8 @@ $('selbar').addEventListener('keydown', (event) => {
  * some may not be loaded — fetch those rather than silently treating them as
  * unknown (the old build reported them as "closed or needs a direct link").
  */
-export async function selectedJobs() {
-  const ids = [...state.selected];
-  const missing = ids.filter((id) => !state.known.has(id));
+export async function selectedJobs(ids = [...state.selected], { fresh = false } = {}) {
+  const missing = fresh ? ids : ids.filter((id) => !state.known.has(id));
   if (missing.length) {
     const fetched = await Promise.allSettled(
       missing.map((id) => api(`/api/jobs/${encodeURIComponent(id)}`)),
@@ -122,10 +143,15 @@ export async function selectedJobs() {
   return ids.map((id) => state.known.get(id)).filter(Boolean);
 }
 
-export async function batchAutofill() {
+/**
+ * Auto-fill the ticked jobs, or `ids` when given ("Retry all N at this
+ * employer" after signing in once). Same confirmation, same server path; it
+ * always stops before the final Submit button.
+ */
+export async function batchAutofill({ ids = null } = {}) {
   if (autofillBlockedReason()) { toast(autofillBlockedReason(), 'bad'); return; }
   if (state.running) { toast('A run is in progress — wait for it to finish.', 'bad'); return; }
-  const jobs = await selectedJobs();
+  const jobs = ids ? await selectedJobs(ids, { fresh: true }) : await selectedJobs();
   if (!jobs.length) return;
 
   const CLOSED = new Set(['submitted', 'rejected', 'archived', 'discarded']);
@@ -155,8 +181,10 @@ export async function batchAutofill() {
 
 export async function batchPrepare() {
   if (state.running) { toast('A run is in progress — wait for it to finish.', 'bad'); return; }
+  if (prepareBlockedNotice()) { toast('Prepare is off until the template values in the notice at the top of the page are replaced.', 'bad'); return; }
   const ids = [...state.selected];
   if (!ids.length) return;
+  for (const id of ids) state.prepareFailures.delete(id);
   try {
     const result = await postJson('/api/prepare-batch', { jobIds: ids });
     toast(`Preparing ${result.queued} packet(s)…`);
@@ -169,6 +197,8 @@ export async function batchApprove() {
   if (!ids.length) return;
   try {
     const result = await postJson('/api/approve-batch', { jobIds: ids });
+    const moved = result.approved.filter((id) => state.known.get(id)?.appStatus === 'needs_review').length;
+    shiftViewCount('needs_review', 'ready_apply', moved);
     const failed = result.failed.length;
     toast(`Approved ${result.approved.length}${failed ? `, ${failed} skipped (no packet yet)` : ''}`,
       failed ? '' : 'good');
@@ -186,8 +216,7 @@ export async function batchApprove() {
  * this, because the selection routinely mixes already-shortlisted rows with
  * untouched ones, and clearing would silently discard the shortlist too.
  */
-export async function batchDecide(decision) {
-  const ids = [...state.selected];
+export async function batchDecide(decision, { ids = [...state.selected] } = {}) {
   if (!ids.length) return;
   // Read the prior state BEFORE the write, from the rows already in memory.
   const before = new Map(ids.map((id) => [id, state.known.get(id)?.userDecision ?? 'clear']));
@@ -197,7 +226,9 @@ export async function batchDecide(decision) {
     scheduleRefresh(0);
     const done = new Set(result.updated);
     const closes = decision === 'rejected' || decision === 'archived';
-    offerUndo(`Marked ${result.updated.length} as ${decision}`,
+    offerUndo(decision === 'clear'
+      ? `Cleared the decision on ${result.updated.length} job(s)`
+      : `Marked ${result.updated.length} as ${decision}`,
       new Map([...before].filter(([id]) => done.has(id))),
       closes ? { reasonFor: { jobIds: [...done], decision } } : {});
   } catch (err) { toast(err.message, 'bad'); }
@@ -206,24 +237,22 @@ export async function batchDecide(decision) {
 /**
  * A toast that carries an Undo button for `wasDecision` (job id -> prior value).
  *
- * Restoring is grouped by prior value so N jobs cost one request per DISTINCT
- * previous decision — typically one or two — rather than one per job.
+ * Undo asks the server to reverse each job's latest decision, so the restored
+ * value and reason come from the event log, not from what this page loaded.
  */
 export function offerUndo(message, wasDecision, { reasonFor = null } = {}) {
   if (!wasDecision.size) { toast(message, 'good'); return; }
-  const groups = new Map();
-  for (const [id, was] of wasDecision) {
-    if (!groups.has(was)) groups.set(was, []);
-    groups.get(was).push(id);
-  }
   const node = el('div', { class: 'toast good undo-toast', role: 'group', 'aria-label': message },
     el('span', { class: 'undo-msg', text: message }));
   const button = el('button', { class: 'small', type: 'button', text: '↩ Undo' });
   button.addEventListener('click', async () => {
     button.disabled = true;
     try {
-      for (const [was, list] of groups) {
-        await postJson('/api/decide-batch', { jobIds: list, decision: was });
+      // The server restores each job's previous decision AND its reason from
+      // the job's own event log. Restoring from the rows loaded in this page
+      // turned an unloaded "shortlisted" into "cleared".
+      for (const id of wasDecision.keys()) {
+        await postJson(`/api/jobs/${encodeURIComponent(id)}/undo-decision`, {});
       }
       node.remove();
       toast(`Restored ${wasDecision.size} job(s)`, 'good');

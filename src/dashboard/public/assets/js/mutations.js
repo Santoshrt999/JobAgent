@@ -3,10 +3,10 @@
 import { $, toast } from './dom.js';
 import { state } from './state.js';
 import { postJson } from './api.js';
-import { loadSections, loadStats } from './analytics.js';
+import { loadSections, loadStats, shiftViewCount } from './analytics.js';
 import { captureRowFocus, loadBoard, restoreRowFocus, rowFor, scheduleBoardReload } from './board.js';
 import { cssEscape, isAggregatorUrl, loadDetail, renderDetail, selectJob } from './detail.js';
-import { autofillBlockedReason, loadToday, scheduleTodayReload } from './today.js';
+import { autofillBlockedReason, loadToday, prepareBlockedNotice, scheduleTodayReload } from './today.js';
 import { offerUndo } from './selection.js';
 import { pollRun } from './runs.js';
 import { loadWorkspace, scheduleWorkspaceReload } from './workspace.js';
@@ -74,8 +74,23 @@ export function applyDecisionLocally(id, patch) {
   }
 }
 
+/** Jobs with a decision request in flight: a second click waits for the first. */
+const deciding = new Set();
+
 export async function decide(id, decision) {
   const known = state.known.get(id);
+  // Five fast clicks on Reject sent five requests, wrote five events and
+  // stacked five undo toasts; with two, Undo restored "rejected", because
+  // the second click saw the first one's optimistic result as "before".
+  // One request per job at a time, and a click that would change nothing is
+  // not a request.
+  if (deciding.has(id)) return;
+  if (decision !== 'clear' && known?.userDecision === decision) return;
+  deciding.add(id);
+  try { await decideOnce(id, decision, known); } finally { deciding.delete(id); }
+}
+
+async function decideOnce(id, decision, known) {
   const before = { appStatus: known?.appStatus, userDecision: known?.userDecision ?? null, attention: known?.attention ?? null };
   // Optimistic: the click shows its result at once, and is rolled back if
   // the server refuses it.
@@ -98,9 +113,19 @@ export async function decide(id, decision) {
   }
 }
 
+/** Which tab a packet action moves a job out of and into (see shiftViewCount). */
+const TAB_MOVES = {
+  approve: ['needs_review', 'needs_review', 'ready_apply'],
+  'reject-packet': ['needs_review', 'needs_review', null],
+  unapprove: ['approved', 'ready_apply', 'needs_review'],
+};
+
 export async function simpleAction(id, action, okMessage) {
   try {
+    const was = state.known.get(id)?.appStatus;
     await postJson(`/api/jobs/${encodeURIComponent(id)}/${action}`);
+    const move = TAB_MOVES[action];
+    if (move && was === move[0]) shiftViewCount(move[1], move[2]);
     toast(okMessage, 'good');
     // Approve / reject-packet change the packet, which only the detail
     // payload carries — one job re-read, reconciled into the rail.
@@ -135,6 +160,8 @@ export async function autofillOne(id) {
 
 export async function prepareOne(id) {
   if (state.running) { toast('A run is in progress — wait for it to finish.', 'bad'); return; }
+  if (prepareBlockedNotice()) { toast('Prepare is off until the template values in the notice at the top of the page are replaced.', 'bad'); return; }
+  state.prepareFailures.delete(id);
   try {
     await postJson('/api/prepare-batch', { jobIds: [id] });
     toast('Preparing the tailored resume + packet…');
@@ -185,7 +212,8 @@ export async function checkLink(id) {
  */
 export function announceDecision(id, decision, wasDecision) {
   if (decision !== 'rejected' && decision !== 'archived') {
-    toast(decision === 'clear' ? 'Decision cleared' : `Marked ${decision}`, 'good');
+    const cleared = { shortlisted: 'Removed from your shortlist', archived: 'Unarchived', rejected: 'No longer rejected' };
+    toast(decision === 'clear' ? (cleared[wasDecision] ?? 'Decision cleared') : `Marked ${decision}`, 'good');
     return;
   }
   const job = state.known.get(id);

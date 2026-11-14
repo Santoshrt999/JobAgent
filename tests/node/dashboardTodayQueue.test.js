@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { openDatabase } from '../../src/logging/db.js';
 import {
   todayQueue, dashboardSections, dashboardStats, boardPage, BOARD_FIELDS, MAX_PAGE_LIMIT,
-  classifyAttention, explainStatus, buildReports, buildDocuments, buildMasterResume,
+  classifyAttention, explainStatus, buildReports, buildDocuments, buildMasterResume, placeholderFixes,
 } from '../../src/dashboard/data.js';
 
 const NOW = new Date('2026-09-22T15:00:00.000Z');
@@ -36,7 +36,7 @@ describe('A1 — GET /api/today contract (todayQueue)', () => {
     const db = openDatabase({ path: ':memory:' });
     seed(db);
     const today = todayQueue(db, { now: NOW });
-    expect(Object.keys(today).sort()).toEqual(['generatedAt', 'items', 'systemNotices']);
+    expect(Object.keys(today).sort()).toEqual(['generatedAt', 'items', 'proposals', 'signInGroups', 'systemNotices']);
     expect(today.items.map((i) => i.id)).toEqual([
       'unverified', 'ready', 'question', 'review', 'approved', 'failed', 'short', 'fresh',
     ]);
@@ -45,7 +45,7 @@ describe('A1 — GET /api/today contract (todayQueue)', () => {
     ]);
     for (const item of today.items) {
       expect(Object.keys(item).sort()).toEqual([
-        'appStatus', 'company', 'fit', 'followUp', 'grade', 'id', 'linkState', 'location', 'nextAction', 'postedAt',
+        'aging', 'appStatus', 'company', 'fit', 'followUp', 'grade', 'id', 'linkState', 'location', 'nextAction', 'postedAt',
         'reason', 'score', 'sponsorshipGated', 'statusLabel', 'tier', 'title',
       ]);
       expect(Object.keys(item.nextAction).sort()).toEqual(['kind', 'label']);
@@ -73,6 +73,46 @@ describe('A1 — GET /api/today contract (todayQueue)', () => {
     expect(notices[0]).toMatchObject({ code: 'profile_placeholders', severity: 'error' });
     expect(notices[0].fix).toMatch(/profile/i);
     db.close();
+  });
+
+  it('says WHERE each template value is fixed, not just its name', () => {
+    const db = openDatabase({ path: ':memory:' });
+    const config = {
+      profile: { id: 'casey' },
+      candidate: {
+        identity: { fullName: 'Casey Fixture' },
+        workAuthorization: {
+          status: 'US Citizen | Green Card | H-1B | OPT | ...',
+          details: 'Describe your authorization truthfully — this is used verbatim in screening answers.',
+        },
+      },
+      coverLetter: {
+        yearsOfExperience: "YOUR total years of experience (e.g. '8 years')",
+        includeSponsorshipNote: true,
+        template: { sponsorshipNote: 'YOUR truthful sponsorship sentence, or set includeSponsorshipNote to false.' },
+      },
+    };
+    const [notice] = todayQueue(db, { now: NOW, config }).systemNotices;
+    const byLabel = Object.fromEntries(notice.items.map((i) => [i.label, i]));
+
+    // candidate.json is regenerated on activation, so it is never the answer.
+    expect(notice.items.every((i) => i.where !== 'config/candidate.json')).toBe(true);
+    // Every one of these is fixed on a screen: the Saved answer it is filled from.
+    expect(notice.items.every((i) => !/\.json$/.test(i.where))).toBe(true);
+    expect(byLabel['work authorization status']).toMatchObject({
+      where: 'Application profile → Saved answers', value: 'US Citizen | Green Card | H-1B | OPT | ...',
+    });
+    expect(byLabel['work authorization status'].how).toMatch(/"work_authorization"/);
+    expect(byLabel['years of experience (used in the cover letter)'].how).toMatch(/"years_experience"/);
+    expect(byLabel['cover-letter sponsorship sentence'].how).toMatch(/"work_authorization"/);
+    db.close();
+  });
+
+  it('sends a form-editable field to the Application profile', () => {
+    expect(placeholderFixes([{ path: 'contact.email', label: 'email', value: 'you@example.com', file: 'config/candidate.json' }]))
+      .toEqual([expect.objectContaining({ where: 'Application profile' })]);
+    expect(placeholderFixes([{ path: 'answers[id=x].answer', label: 'screening answer "x"', value: 'YOUR answer', file: 'config/screening_answers.json' }]))
+      .toEqual([expect.objectContaining({ where: 'Application profile → Saved answers' })]);
   });
 });
 

@@ -28,6 +28,7 @@ import * as smartrecruiters from './smartrecruiters.js';
 import { withRetry } from '../../utils/retryHandler.js';
 import { mapWithConcurrency } from '../../utils/concurrency.js';
 import { fetchWithTimeout, discoveryHeaders } from '../../utils/httpClient.js';
+import { safeFetch } from '../../utils/safeFetch.js';
 
 export const adapterId = 'careers';
 
@@ -150,7 +151,7 @@ async function runCompany(company = {}, source, ctx, maxLinks) {
 
 /** Strategy 2: scrape job links off a public careers page, then parse each. */
 async function fromCareersPage(company, source, ctx, maxLinks) {
-  const { fetchImpl = fetch, rateLimiter, hostGate, maxRetries = 3, requestTimeoutMs } = ctx;
+  const { fetchImpl = safeFetch, rateLimiter, hostGate, maxRetries = 3, requestTimeoutMs } = ctx;
   const errors = [];
 
   if (rateLimiter) await rateLimiter.wait('careers', source.rateLimitMs);
@@ -172,7 +173,7 @@ async function fromCareersPage(company, source, ctx, maxLinks) {
 
 /** Strategy 3: read a public sitemap (or sitemap index), then parse job-like URLs. */
 async function fromSitemap(company, source, ctx, maxLinks) {
-  const { fetchImpl = fetch, rateLimiter, hostGate, maxRetries = 3, requestTimeoutMs } = ctx;
+  const { fetchImpl = safeFetch, rateLimiter, hostGate, maxRetries = 3, requestTimeoutMs } = ctx;
   const errors = [];
 
   if (rateLimiter) await rateLimiter.wait('careers', source.rateLimitMs);
@@ -211,7 +212,7 @@ async function fromSitemap(company, source, ctx, maxLinks) {
 
 /** Parse a list of public posting URLs via the JSON-LD reader, tagging company. */
 async function parseLinks(urls, company, source, ctx, errors) {
-  const { fetchImpl = fetch, rateLimiter, hostGate, maxRetries = 3, requestTimeoutMs } = ctx;
+  const { fetchImpl = safeFetch, rateLimiter, hostGate, maxRetries = 3, requestTimeoutMs } = ctx;
   const concurrency = ctx.detailConcurrency ?? DEFAULT_LINK_CONCURRENCY;
   const jobs = [];
 

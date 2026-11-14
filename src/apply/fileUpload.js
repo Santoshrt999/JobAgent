@@ -59,4 +59,34 @@ function validate(type, path, required, allowed, uploads, blockers) {
   uploads.push({ type, path, name: basename(path), sizeBytes: size });
 }
 
+/** Formats a document is rendered in, in the order a form should prefer them. */
+const DOCUMENT_FORMATS = ['.pdf', '.docx', '.doc', '.rtf', '.txt'];
+
+/**
+ * The same document in every format it exists in: the path itself first, then
+ * siblings with the SAME stem in another document format, e.g.
+ * `..._Cover_Letter_X.txt` -> [`.txt`, `.pdf`?, `.docx`].
+ *
+ * The packet writes each document under one stem in several formats (see
+ * outputPaths), so a same-stem sibling is that document, not another one. A
+ * form that accepts only .doc/.docx/.pdf (Rippling) then gets the .docx cover
+ * letter instead of the .txt it rejects (2026-11-12, a Rippling posting).
+ *
+ * @param {string} path
+ * @param {{fileExists?: (p: string) => boolean}} [deps]
+ * @returns {string[]} existing paths, `path` first
+ */
+export function documentFormats(path, { fileExists = existsSync } = {}) {
+  if (!path) return [];
+  const ext = extname(path);
+  const stem = ext ? path.slice(0, -ext.length) : path;
+  const out = [path];
+  for (const format of DOCUMENT_FORMATS) {
+    if (format === ext.toLowerCase()) continue;
+    const candidate = `${stem}${format}`;
+    try { if (fileExists(candidate)) out.push(candidate); } catch { /* unreadable: skip */ }
+  }
+  return out;
+}
+
 export { RESUME_EXTENSIONS, COVER_LETTER_EXTENSIONS };

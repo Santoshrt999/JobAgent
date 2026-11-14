@@ -68,8 +68,10 @@ export function statNode({ key, label, tone, filter, title }, stats) {
       type: 'button',
       'data-action': 'metric-filter',
       'data-filter': JSON.stringify(filter),
-      'aria-label': `${fmt(value)} ${label} — filter the board to these`,
-    }, el('b', { text: known ? fmt(value) : 'n/a' }), el('span', { class: 'l', text: label }));
+    // The visible words ARE the accessible name (WCAG 2.5.3: a voice-control
+    // user says what they see). The purpose rides along as hidden text.
+    }, el('b', { text: known ? fmt(value) : 'n/a' }), ' ', el('span', { class: 'l', text: label }),
+    el('span', { class: 'sr-only', text: ' (filter the board to these)' }));
   }
   return el('span', attrs, el('b', { text: known ? fmt(value) : 'n/a' }), el('span', { class: 'l', text: label }));
 }
@@ -96,6 +98,20 @@ export function renderHealth(stats) {
   // This strip is rebuilt from scratch on every stats load, so the profile
   // pill has to be re-added here or it would vanish on the next poll.
   renderHealthProfileFlag();
+}
+
+/**
+ * Move `n` jobs between two tab counts right away. /api/stats is throttled to
+ * once a minute (it reads the whole store), so after approving ten packets the
+ * "Needs review" tab kept saying 10 over an empty list until the next recount.
+ * The recount still follows and corrects anything this guessed wrong.
+ */
+export function shiftViewCount(from, to, n = 1) {
+  const views = state.stats?.views;
+  if (!views || !(n > 0)) return;
+  if (from && Number.isFinite(views[from])) views[from] = Math.max(0, views[from] - n);
+  if (to && Number.isFinite(views[to])) views[to] += n;
+  renderTabs();
 }
 
 export function renderTabs() {
@@ -342,9 +358,9 @@ export function actionButton(action, className) {
     attrs['data-action'] = 'run';
     attrs['data-phase'] = 'discover';
   }
-  // The composed sentence is the accessible name, so a screen reader still gets
-  // the full guidance rather than "179, Approve prepared packets".
-  attrs['aria-label'] = action.text;
+  // The visible count and verb are the accessible name (WCAG 2.5.3, so a
+  // voice-control user can say what they see). Callers add the rest of the
+  // guidance as visible or screen-reader-only text inside the button.
   return el('button', attrs);
 }
 
@@ -364,9 +380,9 @@ export function renderNextActions(list) {
   const [first, ...rest] = jobs;
   if (first) {
     const primary = actionButton(first, 'na-primary');
-    primary.append(el('span', { class: 'na-count', text: fmt(first.count) }));
+    primary.append(el('span', { class: 'na-count', text: fmt(first.count) }), ' ');
     const body = el('span', { class: 'na-body' });
-    body.append(el('b', { text: first.verb }));
+    body.append(el('b', { text: first.verb }), ' ');
     body.append(el('span', { class: 'na-detail', text: first.detail }));
     primary.append(body);
     primary.append(el('span', { class: 'na-go', 'aria-hidden': 'true', text: '→' }));
@@ -377,8 +393,9 @@ export function renderNextActions(list) {
     const ul = el('ul', { class: 'na-list' });
     for (const action of rest) {
       const button = actionButton(action, 'na-row');
-      button.append(el('span', { class: 'na-n', text: fmt(action.count) }));
+      button.append(el('span', { class: 'na-n', text: fmt(action.count) }), ' ');
       button.append(el('span', { class: 'na-verb', text: action.verb }));
+      if (action.detail) button.append(el('span', { class: 'sr-only', text: `. ${action.detail}` }));
       button.append(el('span', { class: 'na-go', 'aria-hidden': 'true', text: '→' }));
       button.title = action.detail;
       ul.append(el('li', {}, button));

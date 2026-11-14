@@ -26,16 +26,18 @@ import { $, el } from './dom.js';
 import { FILTER_IDS, state, TOGGLE_IDS } from './state.js';
 import { filterValue, SORT_DIRECTION } from './filters.js';
 import { renderTabs } from './analytics.js';
-import { loadBoard } from './board.js';
+import { loadBoard, setRowTabStop } from './board.js';
 import { cssEscape, isSheetLayout, placeDetail, selectJob, SHEET_QUERY } from './detail.js';
 import { openDialog } from './dialogs.js';
-import { refreshAll } from './mutations.js';
+import { decide, prepareOne, refreshAll } from './mutations.js';
 import { loadHealthChecks, setView } from './today.js';
 import { syncSelectionBar, toggleSelect } from './selection.js';
 import { uploadMasterResume } from './master.js';
+import { uploadMasterLetter } from './letters.js';
 import { loadProfileFlag } from './profile.js';
 import { pollRun, scheduleBackgroundRefresh, setRunDetails } from './runs.js';
-import { syncBoardSearchAction } from './actions.js';
+import { dispatchAction, loadFeatures, syncBoardSearchAction } from './actions.js';
+import { installPalette } from './palette.js';
 import { closeMainMenu } from './menus.js';
 import { installWorkspaceDrag } from './workspace.js';
 import { announcePendingSwitch, loadProfiles } from './profiles.js';
@@ -57,6 +59,15 @@ $('rows').addEventListener('keydown', (event) => {
     selectJob(row.dataset.id, { user: true });
     return;
   }
+  // Single-key triage on the focused row (never with a modifier, never while
+  // a control inside the row has focus). Each is the same action as its
+  // button, with the same Undo; nothing here approves, fills or submits.
+  const TRIAGE = { s: 'shortlisted', e: 'archived', r: 'rejected' };
+  if (event.target === row && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    const key = event.key.toLowerCase();
+    if (TRIAGE[key]) { event.preventDefault(); decide(row.dataset.id, TRIAGE[key]); return; }
+    if (key === 'p') { event.preventDefault(); prepareOne(row.dataset.id); return; }
+  }
   if (event.key === 'x' || event.key === 'X') {
     event.preventDefault();
     const box = row.querySelector('input[type=checkbox]');
@@ -64,7 +75,13 @@ $('rows').addEventListener('keydown', (event) => {
     toggleSelect(row.dataset.id, box.checked);
     return;
   }
-  const delta = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+  // j/k as in every triage tool; Home/End to the ends of the page. Only on
+  // the row itself, never while a control inside it has focus.
+  const onRow = event.target === row;
+  const delta = event.key === 'ArrowDown' || (onRow && event.key === 'j') ? 1
+    : event.key === 'ArrowUp' || (onRow && event.key === 'k') ? -1
+      : onRow && event.key === 'Home' ? -index
+        : onRow && event.key === 'End' ? state.visible.length - 1 - index : 0;
   if (!delta) return;
   event.preventDefault();
   const next = state.visible[index + delta];
@@ -76,6 +93,13 @@ $('rows').addEventListener('keydown', (event) => {
     // trap the user — arrows move, Enter opens.
     if (!isSheetLayout()) selectJob(next, { defer: 120 });
   }
+});
+
+// Whichever row receives focus (a click, restored focus, arrows) takes the
+// board's single tab stop, so Tab out and Shift+Tab back return to it.
+$('rows').addEventListener('focusin', (event) => {
+  const row = event.target.closest('tr.job');
+  if (row && row.tabIndex !== 0) setRowTabStop(row);
 });
 
 /**
@@ -340,6 +364,9 @@ export function syncFilterSheetCount() {
 $('masterFile').addEventListener('change', (event) => {
   uploadMasterResume(event.target.files?.[0]);
 });
+$('letterFile').addEventListener('change', (event) => {
+  uploadMasterLetter(event.target.files?.[0]);
+});
 
 /* ───────────────────────────── boot ───────────────────────────── */
 
@@ -358,6 +385,7 @@ export function syncTopbarHeight() {
 }
 new ResizeObserver(syncTopbarHeight).observe(topbarEl);
 syncTopbarHeight();
+
 
 export const savedTheme = readPreference('theme');
 if (savedTheme === 'light' || savedTheme === 'dark') {
@@ -382,6 +410,7 @@ syncThemeControl();
 // Who the dashboard is searching as: the header's initials and the Profile
 // menu's switcher. Not awaited — the board must never wait on it.
 loadProfiles().then(announcePendingSwitch);
+loadFeatures();
 matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', syncThemeControl);
 
 export function jobIdFromHash() {
@@ -442,6 +471,7 @@ placeDetail();
 // Today is the landing view unless the user last chose the board.
 state.appsLayout = readPreference('appsLayout') === 'list' ? 'list' : 'kanban';
 installWorkspaceDrag();
+installPalette(dispatchAction);
 setView(['board', 'applications'].includes(readPreference('view')) ? readPreference('view') : 'today', { save: false });
 applyViewPrefs();
 renderTabs();

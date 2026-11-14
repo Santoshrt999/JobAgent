@@ -6,7 +6,9 @@ import { state } from './state.js';
 import { api, postJson } from './api.js';
 import { sponsorshipEvidence, sponsorshipTitle, statusLabel } from './board.js';
 import { openDialog, placeToasts } from './dialogs.js';
-import { autofillBlockedReason, BROWSER_MISSING } from './today.js';
+import { autofillBlockedReason, BROWSER_MISSING, placeholderList, prepareBlockedNotice } from './today.js';
+import { rewritesSection } from './rewrites.js';
+import { versionsSection } from './versions.js';
 
 /* ──────────────────────── detail rail ──────────────────────── */
 
@@ -66,6 +68,90 @@ export async function selectJob(id, { focusRow = false, user = false, defer = 0 
     if (state.selectedId !== id) return;
   }
   await loadDetail(id);
+}
+
+/**
+ * Close the rail's job: nothing selected, the placeholder back, no #job= hash.
+ */
+export function clearDetail() {
+  flushNote();
+  clearTimeout(selectTimer);
+  state.selectedId = null;
+  markCurrentRow(null);
+  if (location.hash.startsWith('#job=')) history.replaceState(null, '', location.pathname + location.search);
+  const host = $('detail');
+  if (!host || host.querySelector(':scope > .panel.empty')) return;
+  host.textContent = '';
+  host.append(el('div', { class: 'panel empty' },
+    el('div', { class: 'big', text: 'Select a job' }),
+    'Its grade, fit breakdown, sponsorship, tailored resume, and next best action appear here.'));
+}
+
+/**
+ * Keep the rail in step with the list the person is looking at (BUG-11).
+ * Switching Jobs -> Applications left an unrelated discovery job open beside
+ * a list that did not contain it. The open job stays only when the new list
+ * shows it; otherwise the list's first item opens on a wide layout (an empty
+ * rail is a third of the screen doing nothing), and a phone shows nothing.
+ *
+ * @param {string[]} ids the list's job ids, in order
+ */
+export function syncDetailToList(ids = []) {
+  if (state.selectedId && ids.includes(state.selectedId)) return;
+  if (ids.length && !isSheetLayout()) selectJob(ids[0]);
+  else if (state.selectedId) clearDetail();
+}
+
+/**
+ * Open a job AND show the part of its detail a card's button promised.
+ *
+ * "See what stopped it" used to call selectJob alone. When that job was
+ * already open (the board selects it, and the rail shows it beside the
+ * board), nothing on screen changed, so the button read as broken. Now the
+ * reason is scrolled into view, briefly marked, and the way out — "Retry
+ * auto-fill", "Mark it submitted"… — takes focus so Enter acts on it.
+ *
+ * @param {string} id
+ * @param {string[]} [keys] rail sections to reveal, first one present wins
+ */
+/**
+ * What focus may be handed to unasked: the primary action first, never a
+ * statement of fact (data-confirms) and never a button that opens a browser
+ * and starts filling (data-launches). After "Approve only", focus landed on
+ * "Fill in browser", so a second Enter meant for the first click started an
+ * application nobody chose to start.
+ */
+const NOT_AUTO = ':not([disabled]):not([data-confirms]):not([data-launches])';
+const AUTO_FOCUSABLE = [`button.primary${NOT_AUTO}`, `button${NOT_AUTO}`, 'a[href]'];
+// When the person ASKED to be taken to the next step ("See what stopped it"),
+// its launch button may take focus: that click was a choice, not a redraw.
+const NOT_CONFIRM = ':not([disabled]):not([data-confirms])';
+const ASKED_FOCUSABLE = [`button.primary${NOT_CONFIRM}`, `button${NOT_CONFIRM}`, 'a[href]'];
+const firstAutoFocusable = (root, { asked = false } = {}) => (asked ? ASKED_FOCUSABLE : AUTO_FOCUSABLE)
+  .map((sel) => root?.querySelector(sel)).find(Boolean) ?? null;
+
+export async function revealInDetail(id, keys = ['attention', 'next']) {
+  await selectJob(id, { user: true });
+  if (state.selectedId !== id) return;
+  const host = $('detail');
+  const section = keys.map((key) => host?.querySelector(`[data-section="${key}"]`)).find(Boolean);
+  if (!section) return;
+  // Scroll the rail (or the sheet), never the window: scrollIntoView also
+  // moved the page, sliding the section's heading under the sticky top bar.
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const scroller = railScroller();
+  if (scroller?.contains(section)) {
+    const top = section.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 12;
+    scroller.scrollTo({ top: Math.max(0, top), behavior: reduce ? 'auto' : 'smooth' });
+  }
+  section.classList.remove('is-spotlit');
+  void section.offsetWidth; // restart the cue on a second click
+  section.classList.add('is-spotlit');
+  setTimeout(() => section.classList.remove('is-spotlit'), 1600);
+  const nextSection = host.querySelector('[data-section="next"]');
+  const way = firstAutoFocusable(nextSection, { asked: true });
+  if (way) way.focus({ preventScroll: true });
+  else if (nextSection) { nextSection.tabIndex = -1; nextSection.focus({ preventScroll: true }); }
 }
 
 export async function loadDetail(id) {
@@ -165,7 +251,16 @@ export function renderDetail(job) {
 
 /** A section is left untouched while the user is working inside it. */
 export function keepSection(node, key) {
-  return node.contains(document.activeElement) || (key === 'notes' && note.isDirty());
+  if (key === 'notes' && note.isDirty()) return true;
+  const active = document.activeElement;
+  if (!active || !node.contains(active)) return false;
+  // Kept only while you are IN something: typing, choosing, or inside an open
+  // menu. A button that merely holds focus after you pressed it is not state —
+  // keeping its section for that left "Do this next" showing the OLD step
+  // after "I submitted it myself" changed the job (the dialog hands focus back
+  // to the button that opened it).
+  return active.matches('input, textarea, select, [contenteditable=""], [contenteditable="true"]')
+    || Boolean(active.closest('details[open]'));
 }
 
 /** Re-apply the open/closed state of keyed <details> to their replacement. */
@@ -179,6 +274,8 @@ export function reconcileDetail(panel, sections) {
   const scroller = railScroller();
   const top = scroller?.scrollTop ?? 0;
   const old = new Map([...panel.children].map((node) => [node.dataset.section, node]));
+  const focused = document.activeElement;
+  let refocus = null;
   let anchor = null;
   for (const node of sections) {
     const key = node.dataset.section;
@@ -188,7 +285,11 @@ export function reconcileDetail(panel, sections) {
     // A kept node is never MOVED: detaching an element, even to reinsert it a
     // moment later, blurs whatever inside it had focus.
     if (prev && keepSection(prev, key)) placed = prev;
-    else if (prev) { carryOpenDetails(prev, node); prev.replaceWith(node); }
+    else if (prev) {
+      if (prev.contains(focused)) refocus = node;
+      carryOpenDetails(prev, node);
+      prev.replaceWith(node);
+    }
     else if (anchor) anchor.after(node);
     else panel.prepend(node);
     anchor = placed;
@@ -196,11 +297,91 @@ export function reconcileDetail(panel, sections) {
   for (const [key, prev] of old) if (!keepSection(prev, key)) prev.remove();
   if (!old.has('notes') && !note.isDirty()) note.saved = state.detailJob?.notes ?? note.saved;
   if (scroller) scroller.scrollTop = top;
+  // Focus was on a button in a section that was just redrawn: hand it to the
+  // same section's new first action, never drop it to <body>.
+  if (refocus && refocus.isConnected) {
+    const next = firstAutoFocusable(refocus);
+    if (next) next.focus({ preventScroll: true });
+    else { refocus.tabIndex = -1; refocus.focus({ preventScroll: true }); }
+  }
 }
 
 /** The grade's own label is the verdict; `fit` is only the fallback. */
 export function verdictLabel(job) {
   return job.grade?.label ?? fitLabel(job.fit);
+}
+
+const MONTH = (iso) => {
+  const t = Date.parse(iso ?? '');
+  return Number.isFinite(t) ? new Date(t).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : null;
+};
+
+/**
+ * Employer history (sponsorship answers on other postings; reposts), or null.
+ * Counts, never a verdict on this posting: the person weighs it.
+ */
+export function historyCard(job) {
+  const h = job.history;
+  if (!h) return null;
+  const lines = el('ul', { class: 'readiness' });
+  const e = h.employer;
+  if (e && (e.sponsorYes || e.sponsorNo)) {
+    const kind = e.verdict === 'unlikely' ? 'portal' : e.verdict === 'likely' ? 'instant' : 'unknown';
+    const said = [e.sponsorYes ? `${e.sponsorYes} said they sponsor` : null, e.sponsorNo ? `${e.sponsorNo} said sponsorship is not available` : null]
+      .filter(Boolean).join(', ');
+    lines.append(el('li', { class: `rd rd-${kind}` },
+      el('b', { text: e.verdict === 'unlikely' ? 'Other postings say no sponsorship' : e.verdict === 'likely' ? 'Other postings say they sponsor' : 'Mixed answers on sponsorship' }),
+      el('span', { class: 'muted', text: `Of ${e.postings} postings from this employer in your store, ${said}. This posting's own wording decides; this is context.` })));
+  }
+  if (h.repost) {
+    const since = MONTH(h.repost.since);
+    lines.append(el('li', { class: 'rd rd-portal' },
+      el('b', { text: `Posted ${h.repost.count} times${since ? ` since ${since}` : ''}` }),
+      el('span', { class: 'muted', text: `The same title at this employer keeps reappearing over ${h.repost.spanDays} days — often an evergreen or reposted requisition rather than one open seat.` })));
+  }
+  return lines.children.length ? lines : null;
+}
+
+const PLATFORM_NAMES = {
+  greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', smartrecruiters: 'SmartRecruiters', jobvite: 'Jobvite',
+  rippling: 'Rippling', workday: 'Workday', oraclerecruiting: 'Oracle Recruiting', oracle: 'Oracle Recruiting',
+  icims: 'iCIMS', taleo: 'Taleo', successfactors: 'SuccessFactors',
+};
+
+/** Access (account or not) and open questions, as two plain lines. */
+export function readinessCard(job) {
+  const a = job.access ?? { kind: 'unknown', label: 'Application system not identified' };
+  const name = PLATFORM_NAMES[a.platform] ?? null;
+  const access = a.kind === 'instant'
+    ? `${name ?? 'This system'} needs no account — Auto-fill can start straight away.`
+    : a.kind === 'portal'
+      ? `${name ?? 'This employer'} needs a candidate account. The first fill stops at sign-in; sign in once in that window and it is remembered.`
+      : 'The application system is not identified yet; Auto-fill will find out when it opens the posting.';
+  const questions = job.openQuestions ?? [];
+  const wrap = el('ul', { class: 'readiness' });
+  wrap.append(el('li', { class: `rd rd-${a.kind}` }, el('b', { text: a.label }), el('span', { class: 'muted', text: access })));
+  const q = el('li', { class: `rd ${questions.length ? 'rd-portal' : 'rd-instant'}` },
+    el('b', { text: questions.length ? `${questions.length} unanswered question${questions.length === 1 ? '' : 's'}` : 'No unanswered questions' }));
+  if (questions.length) {
+    q.append(el('span', { class: 'muted', text: questions.slice(0, 3).map((x) => `“${x.label}”`).join(', ') + (questions.length > 3 ? '…' : '') }),
+      el('button', { type: 'button', class: 'small', 'data-action': 'open-profile', text: 'Answer them' }));
+  } else {
+    q.append(el('span', { class: 'muted', text: 'None recorded for this job. Questions a form asks that your answers cannot cover are saved here.' }));
+  }
+  wrap.append(q);
+  return wrap;
+}
+
+/** The posting's buried conditions as small expandable tags. */
+export function clauseStrip(clauses) {
+  const list = el('ul', { class: 'clauses', 'aria-label': 'Conditions stated in this posting' });
+  for (const c of clauses) {
+    list.append(el('li', { class: `clause k-${c.kind}` },
+      el('details', { 'data-key': `clause-${c.kind}` },
+        el('summary', { text: c.label }),
+        el('q', { class: 'clause-quote', text: c.quote }))));
+  }
+  return list;
 }
 
 export function detailSections(job) {
@@ -271,6 +452,10 @@ export function detailSections(job) {
   headMain.append(chips);
   head.append(headMain);
   out.push(railSection('head', head));
+  // Conditions the posting buries (a 90-day onsite ramp-up under "Hybrid",
+  // 50% travel, an on-call rotation): stated up top, each opening onto the
+  // sentence it came from so it can be checked, not trusted.
+  if (job.clauses?.length) out.push(railSection('clauses', clauseStrip(job.clauses)));
   out.push(railSection('stepper', stepper(job.progress)));
 
   // attention
@@ -295,6 +480,15 @@ export function detailSections(job) {
   const next = nextBestAction(job);
   out.push(railSection('next', el('h3', { text: 'Do this next' }), next));
 
+  const history = historyCard(job);
+  if (history) out.push(railSection('history', el('h3', { text: 'This employer, from your saved postings' }), history));
+
+  // Before a browser opens: will this need an employer account, and which of
+  // the form's questions is nobody ready to answer?
+  if (job.access && !['submitted', 'rejected', 'archived', 'discarded'].includes(job.appStatus)) {
+    out.push(railSection('readiness', el('h3', { text: 'Auto-fill readiness' }), readinessCard(job)));
+  }
+
   // After a submission, what the employer did and when to chase it. Right
   // under the next step, because once applied this IS the next step.
   if (job.application?.appStatus === 'submitted') {
@@ -307,6 +501,10 @@ export function detailSections(job) {
 
   // resume card — the feature the workflow revolves around
   out.push(railSection('resume', resumeCard(job)));
+  const rewrites = rewritesSection(job);
+  if (rewrites) out.push(rewrites);
+  const versions = versionsSection(job);
+  if (versions) out.push(versions);
 
   // quick actions
   // Three groups: what you do most (open, shortlist, reject) stays visible;
@@ -328,8 +526,22 @@ export function detailSections(job) {
   // down — Shortlist sat in both. It moves into "More actions", so it is
   // still reachable from the same place as every other decision.
   const offered = new Set([...next.querySelectorAll('[data-action="decide"]')].map((b) => b.dataset.decision));
-  for (const [decision, label, visible] of [['shortlisted', '★ Shortlist', true], ['rejected', '✕ Reject', true],
-    ['archived', 'Archive', false], ['clear', 'Clear', false]]) {
+  // THE WAY BACK, NAMED AND IN VIEW. Undoing a decision was a generic "Clear"
+  // under More actions, so "how do I unarchive this?" or "how do I take it off
+  // my shortlist?" had no visible answer (Reject looked like the only way out,
+  // and it is a different decision). The job's current decision is replaced by
+  // the button that undoes it; with no decision there is nothing to undo.
+  //
+  // A submitted application is a record, not a candidate to sort: rejecting
+  // it only skewed the counts while the row still read "Submitted".
+  const current = job.userDecision ?? null;
+  const decisions = ['submitted', 'submit_unverified'].includes(job.appStatus) ? [] : [['shortlisted', '★ Shortlist', true], ['rejected', '✕ Reject', true],
+    ['archived', 'Archive', false], ['clear', UNDO_LABEL[current], true]];
+  for (const [decision, label, visible] of decisions) {
+    if (decision === current) continue;
+    // "Do this next" already offers the undo for a rejected/archived job, under
+    // the same name; a second copy hidden in More actions is only noise.
+    if (decision === 'clear' && (!UNDO_LABEL[current] || offered.has('clear'))) continue;
     (visible && !offered.has(decision) ? actions : more).append(el('button', {
       class: 'small', 'data-action': 'decide', 'data-id': job.id, 'data-decision': decision, text: label,
     }));
@@ -382,7 +594,7 @@ export function detailSections(job) {
     out.push(railSection('assist', el('h3', { text: 'Last assisted fill' }), box));
   }
 
-  if (job.packet) out.push(railSection('packet', packetSection(job.packet)));
+  if (job.packet) out.push(railSection('packet', packetSection(job.packet, job.id)));
 
   // job id (for the browser extension)
   const idRow = el('div', { class: 'row-gap' });
@@ -543,12 +755,29 @@ export function keywordList(list = [], tone = '') {
   return wrap;
 }
 
+const OFF_RAMP_WORDS = Object.freeze({
+  blocked: ['Paused — waiting on you', 'warn'],
+  failed: ['Stopped by an error', 'bad'],
+  cancelled: ['Paused — you stopped the run', ''],
+  skipped: ['Skipped', ''],
+  rejected: ['Rejected', ''],
+  archived: ['Archived', ''],
+  discarded: ['Discarded', ''],
+  date_unconfirmed: ['Posting date not confirmed yet', 'warn'],
+  submit_unverified: ['Submitted? Not confirmed yet', 'warn'],
+  needs_description: ['Waiting for the job description', ''],
+});
+
 export function stepper(progress) {
   if (!progress) return el('div');
   const labels = ['Found', 'Scored', 'Shortlist', 'Prepared', 'Approved', 'Ready', 'Submitted'];
   if (progress.offRamp) {
-    return el('div', { class: 'muted' }, 'Off the happy path: ',
-      el('b', { class: 'st-blocked', text: progress.stage.replace(/_/g, ' ') }));
+    // Plain words for where the job is parked. "Off the happy path: blocked"
+    // in alarm red read as a crash for what is usually one question to answer.
+    const [words, tone] = OFF_RAMP_WORDS[progress.stage] ?? [progress.stage.replace(/_/g, ' '), ''];
+    return el('div', { class: 'offramp' },
+      el('span', { class: `offramp-dot ${tone}`.trim(), 'aria-hidden': 'true' }),
+      el('span', { text: words }));
   }
   const wrap = el('div');
   const bars = el('div', { class: 'stepper' });
@@ -620,7 +849,30 @@ export function fitCard(job) {
       el('div', {},
         el('h4', { text: `Asked for, not evidenced in your resume (${missing.length})` }), keywordList(missing, 'bad'))));
   }
+  const evidence = (job.evidence ?? []).filter((e) => !String(job.title ?? '').toLowerCase().includes(String(e.term).toLowerCase()));
+  if (!unread && evidence.length) card.append(evidenceList(evidence));
   return card;
+}
+
+/**
+ * Where each asked-for skill is proven in the master resume, quoted. An
+ * unproven skill says so and points at the master resume: if the person has
+ * that experience, writing it there (truthfully, in their words) is the fix.
+ */
+export function evidenceList(evidence) {
+  const proven = evidence.filter((e) => e.lines.length).length;
+  const list = el('ul', { class: 'evidence' });
+  for (const e of evidence) {
+    const item = el('li', { class: e.lines.length ? 'ev ok' : 'ev none' }, el('b', { class: 'ev-term', text: e.term }));
+    if (e.lines.length) for (const line of e.lines) item.append(el('q', { class: 'ev-line', text: line }));
+    else item.append(el('span', { class: 'ev-line muted', text: 'No line in your master resume mentions this. If you have done it, add it there in your own words.' }));
+    list.append(item);
+  }
+  const unproven = evidence.length - proven;
+  const details = el('details', { class: 'fitcard-evidence', 'data-key': 'evidence' },
+    el('summary', { text: `Evidence from your master resume (${proven} of ${evidence.length} proven)` }), list);
+  if (unproven) details.append(el('button', { type: 'button', class: 'small', 'data-action': 'open-master', text: 'Open master resume' }));
+  return details;
 }
 
 /** Local calendar day, `offset` days from today, as YYYY-MM-DD. */
@@ -733,7 +985,7 @@ export function nextBestAction(job) {
 export const autofillButton = (id, label = 'Auto-fill application') => {
   const blocked = autofillBlockedReason();
   return el('button', {
-    class: 'small primary', 'data-action': 'autofill-one', 'data-id': id,
+    class: 'small primary', 'data-action': 'autofill-one', 'data-id': id, 'data-launches': '',
     disabled: Boolean(blocked),
     title: blocked ?? 'Prepare a packet if needed, approve it, open the posting, fill everything it can — and stop before Submit.',
     text: label,
@@ -756,6 +1008,10 @@ export function actionPlan(job) {
   const markSubmitted = () => el('button', {
     class: 'small primary', 'data-action': 'open-submit-dialog', 'data-id': job.id, text: 'I submitted it myself',
   });
+  // The same record, offered beside a retry rather than as the main step.
+  const submittedMyself = () => el('button', {
+    class: 'small', 'data-action': 'open-submit-dialog', 'data-id': job.id, text: '✓ I submitted it myself',
+  });
 
   if (job.appStatus === 'submitted') {
     // The automation's part is done; the application is not. What the
@@ -769,14 +1025,48 @@ export function actionPlan(job) {
     return {
       // The server's explanation knows whether this was our click or the
       // human's own submit; fall back to the generic wording only without it.
-      text: job.statusReason || ('Auto-submit clicked Submit but no confirmation was detected. Check the ATS or your email. '
-        + 'This is NOT counted as applied until you confirm.'),
-      buttons: [markSubmitted(), openPosting()],
+      text: 'Did it go through? Check your email or the employer\'s site for a confirmation.',
+      // Three ways out. This used to offer only "I submitted it myself" again,
+      // which without a confirmation number changed nothing: a loop.
+      buttons: [
+        // data-confirms: a statement of fact, so focus is never moved onto it
+        // for you — one stray Enter must not record a submission.
+        el('button', { class: 'small primary', 'data-action': 'confirm-went-through', 'data-confirms': '', 'data-id': job.id, text: '✓ Yes, it went through' }),
+        el('button', { class: 'small', 'data-action': 'open-submit-dialog', 'data-id': job.id, text: 'Add confirmation number…' }),
+        el('button', { class: 'small ghost', 'data-action': 'not-submitted', 'data-confirms': '', 'data-id': job.id, text: 'No, it didn\'t' }),
+        openPosting(),
+      ],
+    };
+  }
+  // Closed, filtered, rejected, archived and unread jobs come FIRST: the fit
+  // branches below would otherwise offer "Auto-fill application" on a job the
+  // person rejected, or that the employer closed.
+  if (job.appStatus === 'rejected' || job.appStatus === 'archived') {
+    return {
+      text: `You ${job.appStatus} this job, so nothing will be filled or sent. Restore it if you changed your mind.`,
+      buttons: [el('button', { class: 'small', 'data-action': 'decide', 'data-id': job.id, 'data-decision': 'clear', text: `↺ ${UNDO_LABEL[job.appStatus] ?? 'Restore'}` })],
+    };
+  }
+  if (job.linkState === 'closed') {
+    return { text: 'The employer has closed this posting, so there is nothing to apply to.', buttons: [openPosting()] };
+  }
+  if (job.appStatus === 'discarded') {
+    return {
+      text: `Filtered out${job.discardReason ? `: ${job.discardReason}` : ''}. Nothing is filled or sent for a filtered job.`,
+      buttons: [openPosting()],
+    };
+  }
+  if (job.appStatus === 'needs_description') {
+    return {
+      text: 'Not judged yet: only a summary was read, so the fit shown is not a verdict. Open the posting, or fetch the description from More actions.',
+      buttons: [openPosting()],
     };
   }
   if (job.appStatus === 'needs_review') {
+    const open = job.packet?.needsUser?.length ?? 0;
     return {
-      text: 'Packet is prepared. Review the tailored resume, then auto-fill opens the application and stops for your review.',
+      text: 'Packet is prepared. Review the tailored resume, then auto-fill opens the application and stops for your review.'
+        + (open ? ` ${open} question${open === 1 ? '' : 's'} still need${open === 1 ? 's' : ''} your answer (listed under "Questions left for you") before it can finish.` : ''),
       buttons: [
         el('button', { class: 'small primary', 'data-action': 'preview-resume', 'data-id': job.id, text: 'Review resume' }),
         autofillButton(job.id),
@@ -788,9 +1078,11 @@ export function actionPlan(job) {
     return {
       text: 'Approved. Open it in a browser — it fills the form and stops before Submit.',
       buttons: [el('button', {
-        class: 'small primary', 'data-action': 'assist', 'data-id': job.id, text: '▶ Fill in browser',
+        class: 'small primary', 'data-action': 'assist', 'data-id': job.id, 'data-launches': '', text: '▶ Fill in browser',
         disabled: Boolean(autofillBlockedReason()), title: autofillBlockedReason(),
-      }), el('button', { class: 'small', 'data-action': 'preview-resume', 'data-id': job.id, text: 'View resume' })],
+      }), el('button', { class: 'small', 'data-action': 'preview-resume', 'data-id': job.id, text: 'View resume' }),
+      // Approving is reversible until the application is filled.
+      el('button', { class: 'small ghost', 'data-action': 'unapprove', 'data-id': job.id, text: 'Unapprove' })],
     };
   }
   if (job.appStatus === 'ready_for_submit') {
@@ -807,7 +1099,7 @@ export function actionPlan(job) {
           + 'employer site, then save that direct URL here.',
         buttons: [openPosting(), el('button', {
           class: 'small', 'data-action': 'open-link-dialog', 'data-id': job.id, text: 'Save direct URL',
-        })],
+        }), submittedMyself()],
       };
     }
     if (['dead_link', 'restricted_link'].includes(kind)) {
@@ -829,10 +1121,19 @@ export function actionPlan(job) {
     }
     // Most stalls are a question the profile cannot answer or a field it
     // leaves blank — so the two places that fix them sit next to the retry.
+    // "Needs attention" right above already says WHAT stopped it; repeating
+    // that sentence here word for word made the panel read twice. This box
+    // says what to DO.
+    // Finishing the form by hand in the window we left open is the step this
+    // panel asks for, so recording that must be right here. It used to exist
+    // only on "ready to submit": a person who completed and submitted a
+    // stopped application had no way to say so, and the job stayed "Needs
+    // your help" (2026-11-12, Oracle).
     return {
-      text: job.attention?.summary
-        || 'The assistant stopped because this step needs you. Complete it in the browser, then retry auto-fill.',
-      buttons: [openPosting(), autofillButton(job.id, '↻ Retry auto-fill'), ...setupLinks()],
+      text: job.statusReason
+        ? 'Sort out that step — in the open browser window, or in your Application profile if a question had no answer — then retry auto-fill. Finished and submitted it yourself? Record it.'
+        : 'The assistant stopped because this step needs you. Complete it in the browser, then retry auto-fill — or record it if you submitted it yourself.',
+      buttons: [autofillButton(job.id, '↻ Retry auto-fill'), submittedMyself(), openPosting(), ...setupLinks()],
     };
   }
   if (job.sponsorshipGated) {
@@ -895,9 +1196,46 @@ export function pageLabel(tailoring) {
   return null;
 }
 
+/** The button that undoes each decision, in the words of what it undoes. */
+export const UNDO_LABEL = Object.freeze({
+  shortlisted: 'Remove from shortlist',
+  archived: 'Unarchive',
+  rejected: 'Undo reject',
+});
+
+/** Hover text on a Prepare control while template text blocks it. */
+const PREPARE_BLOCKED_TITLE = 'Off until your profile holds no template text. The box below lists each value and where to fix it.';
+
+/**
+ * Why this job cannot be prepared, shown where Prepare is clicked and kept
+ * there until fixed. A refused Prepare used to leave only a passing toast and
+ * "Prepared 0 packet(s)", so it looked as if the click did nothing.
+ */
+export function prepareProblemBox(jobId) {
+  const blocked = prepareBlockedNotice();
+  if (blocked) {
+    return el('div', { class: 'attention prepare-problem', role: 'status' },
+      el('span', { class: 'mark', text: '!' }),
+      el('div', {},
+        el('b', { text: 'Prepare is off: your profile still holds template text.' }),
+        el('div', { text: 'Replace each value below with your real, truthful one. This box clears once they are all fixed.' }),
+        blocked.items?.length ? placeholderList(blocked.items) : null));
+  }
+  const failure = state.prepareFailures?.get(jobId);
+  if (failure) {
+    return el('div', { class: 'attention prepare-problem', role: 'status' },
+      el('span', { class: 'mark', text: '!' }),
+      el('div', {},
+        el('b', { text: 'The last Prepare of this job failed.' }),
+        el('div', { text: failure })));
+  }
+  return null;
+}
+
 /** The resume review card: status, what changed, and one-click preview. */
 export function resumeCard(job) {
   const card = el('div', { class: 'resume-card' });
+  const blocked = Boolean(prepareBlockedNotice());
   const head = el('div', { class: 'rc-head' });
   head.append(el('span', { class: 'rc-title', text: 'Tailored resume' }));
 
@@ -907,8 +1245,12 @@ export function resumeCard(job) {
     head.append(el('span', { class: 'chip', text: 'not prepared' }));
     card.append(head);
     card.append(el('div', { class: 'muted', text: 'No tailored resume yet. Prepare this job to generate one from your master resume.' }));
+    card.append(prepareProblemBox(job.id) ?? '');
     card.append(el('div', { class: 'actions' },
-      el('button', { class: 'small primary', 'data-action': 'prepare-one', 'data-id': job.id, text: 'Prepare resume' }),
+      el('button', {
+        class: 'small primary', 'data-action': 'prepare-one', 'data-id': job.id, text: 'Prepare resume',
+        disabled: blocked, title: blocked ? PREPARE_BLOCKED_TITLE : null,
+      }),
       el('button', {
         class: 'small ghost', 'data-action': 'open-master',
         title: 'View, edit, or replace the master resume every tailored version is built from.',
@@ -958,11 +1300,24 @@ export function resumeCard(job) {
   links.append(el('a', {
     class: 'btn small', href: `/api/jobs/${encodeURIComponent(job.id)}/resume?format=docx`, text: 'Download DOCX',
   }));
+  if (packet?.resumeTailored && job.resumeDocxPath) {
+    // Before and after, line by line: what moved, what was left out, and
+    // whether any of it mattered. Left-out lines can be kept from here.
+    const omittedCount = (packet?.tailoring?.changes ?? [])
+      .find((c) => c.type === 'fit_to_page_budget')?.evidence?.[0]?.omitted?.length ?? 0;
+    links.append(el('button', {
+      class: 'small', 'data-action': 'open-resume-diff', 'data-id': job.id,
+      title: 'See every difference from your master resume, and keep anything that was left out',
+      text: omittedCount ? `Compare · ${omittedCount} left out` : 'Compare with master',
+    }));
+  }
   links.append(el('button', {
     class: 'small', 'data-action': 'prepare-one', 'data-id': job.id,
-    title: 'Regenerate the tailored resume and refresh this audit', text: '↻ Re-tailor',
+    title: blocked ? PREPARE_BLOCKED_TITLE : 'Regenerate the tailored resume and refresh this audit', text: '↻ Re-tailor',
+    disabled: blocked,
   }));
   card.append(links);
+  card.append(prepareProblemBox(job.id) ?? '');
 
   if (packet?.resumeWarning) {
     card.append(el('div', { class: 'attention' }, el('span', { class: 'mark', text: '!' }),
@@ -971,7 +1326,7 @@ export function resumeCard(job) {
   return card;
 }
 
-export function packetSection(packet) {
+export function packetSection(packet, jobId = null) {
   const wrap = el('div');
   if (packet.error) {
     wrap.append(el('h3', { text: 'Application packet' }));
@@ -984,6 +1339,8 @@ export function packetSection(packet) {
   guarantee.append(`Stops before submit: ${packet.stopBeforeSubmit ? 'yes' : 'NO — report this'} · `);
   guarantee.append(`submit-ready flag: ${packet.submitReady ? 'YES — report this' : 'no'}`);
   wrap.append(guarantee);
+  const letter = coverLetterSection(packet, jobId);
+  if (letter) wrap.append(letter);
 
   if (packet.tailoring?.changes?.length || packet.tailoring?.gaps?.length) {
     wrap.append(el('h3', { text: 'What was changed in your resume' }));
@@ -1006,15 +1363,21 @@ export function packetSection(packet) {
       wrap.append(el('h3', { text: `Left out to fit the page limit (${trimmed.length})` }));
       wrap.append(el('div', {
         class: 'evidence-note',
-        text: 'Whole bullets from your oldest roles, chosen as the least relevant to this '
-          + 'posting. Nothing was shortened or reworded. Every role kept its dates and at '
-          + 'least one bullet.',
+        text: 'Whole bullets with the least relevance to this posting and no measured result, '
+          + 'oldest roles first. Nothing was shortened or reworded, and your current role\'s '
+          + 'evidence for required skills is never left out.',
       }));
       const omitted = el('ul', { class: 'change-list' });
       for (const entry of trimmed.slice(0, 8)) {
         omitted.append(el('li', { class: 'muted', text: entry.text }));
       }
       wrap.append(omitted);
+      if (jobId) {
+        wrap.append(el('button', {
+          type: 'button', class: 'small', 'data-action': 'open-resume-diff', 'data-id': jobId,
+          text: 'Compare and keep lines',
+        }));
+      }
     }
 
     if ((packet.tailoring.gaps ?? []).length) {
@@ -1083,13 +1446,77 @@ export function resumeChangeLabel(change = {}) {
     stabilize_page_breaks: 'Kept section headings with their first content line.',
     normalize_layout: 'Cleaned up layout artifacts (manual page breaks, merged role blocks, blank filler).',
     fit_to_page_budget: 'Omitted the least relevant bullets from the oldest roles to hold the page limit.',
+    rewrite: 'Used a rewording you accepted, backed by your own resume text.',
+    rewrite_skipped: 'Skipped a rewording you accepted: that bullet is no longer in your master resume.',
   };
   const label = labels[change.type] || change.reason
     || String(change.type ?? 'Recorded an update').replace(/_/g, ' ');
   // These two describe WHAT they did in `after`, and that detail is the point.
+  if (change.type === 'rewrite' && change.before && change.after) return `${label} "${change.before}" became "${change.after}"`;
   return ['normalize_layout', 'fit_to_page_budget'].includes(change.type) && change.after
     ? `${label} (${change.after})`
     : label;
+}
+
+/**
+ * The job's cover letter: where its words came from, how it reads, and one
+ * click to read or edit it. When no letter was written for the job, a draft
+ * from the master cover letter is one click away instead.
+ */
+export function coverLetterSection(packet, jobId = null) {
+  const grounding = packet.coverLetterGrounding;
+  const wrap = el('div', { class: 'cl-grounding' });
+  if (!packet.coverLetterGenerated || !grounding) {
+    if (!jobId) return null;
+    wrap.append(el('h3', { text: 'Cover letter' }));
+    wrap.append(el('p', { class: 'muted', text: 'None was written for this job when it was prepared.' }));
+    wrap.append(el('div', { class: 'row-gap' },
+      el('button', { type: 'button', class: 'small', 'data-action': 'open-job-letter', 'data-id': jobId, text: 'Draft one' }),
+      el('button', { type: 'button', class: 'small ghost', 'data-action': 'open-master-letter', text: 'Master cover letter' })));
+    return wrap;
+  }
+  const head = el('div', { class: 'cl-head' }, el('h3', { text: 'Cover letter' }));
+  const q = grounding.quality;
+  if (q?.label) {
+    const tone = q.label === 'Strong' ? 'good' : q.label === 'Good' ? 'info' : 'warn';
+    head.append(el('span', { class: `chip ${tone}`, title: (q.issues ?? []).map((i) => i.message).join('\n') || 'No issues found', text: `${q.label} · ${q.words} words` }));
+  }
+  wrap.append(head);
+  const from = {
+    grounded: `Written from your resume: each of its ${grounding.paragraphs?.length ?? 0} paragraphs uses only lines it cites.`,
+    master: `Tailored from your master cover letter${grounding.master?.depth ? ` (${grounding.master.depth} length for this match)` : ''}.`,
+  }[grounding.mode] ?? (grounding.fallbackReason
+    ? `Written from the basic template, because ${grounding.fallbackReason}.`
+    : 'Written from the basic template. A master cover letter gives every job a fuller, more personal letter.');
+  wrap.append(el('p', { text: from }));
+  if (grounding.mode === 'grounded') {
+    const ul = el('ul', { class: 'change-list' });
+    for (const p of grounding.paragraphs ?? []) {
+      ul.append(el('li', {}, el('span', { text: p.text }), el('span', { class: 'faint', text: ` (backed by ${p.evidence.length} resume line(s))` })));
+    }
+    wrap.append(ul);
+  }
+  if (grounding.dropped?.length) {
+    wrap.append(el('p', { class: 'muted', text: `${grounding.dropped.length} suggested paragraph(s) were left out because your resume does not back them.` }));
+  }
+  const actions = el('div', { class: 'row-gap' });
+  if (jobId) actions.append(el('button', { type: 'button', class: 'small', 'data-action': 'open-job-letter', 'data-id': jobId, text: 'Read and edit' }));
+  if (grounding.mode !== 'master') actions.append(el('button', { type: 'button', class: 'small ghost', 'data-action': 'open-master-letter', text: 'Master cover letter' }));
+  wrap.append(actions);
+  if (packet.coverLetterDocxPath) {
+    wrap.append(el('p', { class: 'faint', text: `Also saved as a Word document: ${String(packet.coverLetterDocxPath).split(/[\\/]/).pop()}` }));
+  }
+  // "Use template instead" for this job: takes effect when the application is
+  // prepared again, which also sends an approved packet back to review.
+  if (jobId && packet.letterMode === 'template') {
+    wrap.append(el('p', { class: 'cl-choice', role: 'status', text: grounding.mode === 'grounded'
+      ? 'You chose your own template for this job. Prepare this application again to rebuild the letter.'
+      : 'You chose your own template for this job.' }));
+    wrap.append(el('button', { type: 'button', class: 'small ghost', 'data-action': 'letter-mode', 'data-id': jobId, 'data-mode': 'default', text: 'Write it from my resume again' }));
+  } else if (jobId && grounding.mode === 'grounded') {
+    wrap.append(el('button', { type: 'button', class: 'small ghost', 'data-action': 'letter-mode', 'data-id': jobId, 'data-mode': 'template', text: 'Use my template for this job instead' }));
+  }
+  return wrap;
 }
 
 /* ─────────────────────── resume preview ─────────────────────── */

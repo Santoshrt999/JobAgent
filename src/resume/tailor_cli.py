@@ -42,7 +42,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def _run(request: dict) -> dict:
-    from tailor import tailor_resume  # local import so import errors are reported
+    from tailor import master_units, tailor_resume  # local import so import errors are reported
+
+    if request.get("mode") == "letter_docx":
+        # A cover letter as a plain, ATS-safe .docx (P1-3): one paragraph per
+        # block of text, no tables, no headers, no images.
+        from docx import Document
+        from docx.shared import Pt
+
+        path = Path(str(request.get("path") or ""))
+        if path.suffix.lower() != ".docx" or not path.parent.exists():
+            return {"ok": False, "error": "path must be a .docx file in an existing folder"}
+        document = Document()
+        style = document.styles["Normal"]
+        style.font.name = "Calibri"
+        style.font.size = Pt(11)
+        for block in str(request.get("text") or "").split("\n\n"):
+            document.add_paragraph(block.strip("\n"))
+        document.save(str(path))
+        return {"ok": True, "path": str(path)}
+
+    if request.get("mode") == "html":
+        # A resume as ATS-safe HTML for the Chromium PDF path (P2-3). Read-only.
+        from tailor import docx_to_html
+
+        if not request.get("docx_path"):
+            return {"ok": False, "error": "docx_path is required"}
+        return {"ok": True, **docx_to_html(request["docx_path"])}
+
+    if request.get("mode") == "units":
+        # The master's paragraphs as citable evidence units (P1-2). Read-only.
+        if not request.get("master_path"):
+            return {"ok": False, "error": "master_path is required"}
+        return {"ok": True, "units": master_units(request["master_path"])}
 
     master_path = request.get("master_path")
     output_dir = request.get("output_dir")
@@ -67,7 +99,7 @@ def _run(request: dict) -> dict:
         keywords,
         request.get("patterns") or {},
         add_summary_line=add_summary_line,
-        max_pages=int(request.get("max_pages") or 2),
+        max_pages=int(request.get("max_pages") if request.get("max_pages") is not None else 2),
         required_markers=ats_config.get("requiredMarkers"),
         preferred_markers=ats_config.get("preferredMarkers"),
         evidence_aliases=evidence_aliases,
@@ -77,6 +109,11 @@ def _run(request: dict) -> dict:
         # verified verbatim against this posting before it was sent, and it can
         # only influence ORDERING priority — never resume content.
         llm_qualifications=request.get("llm_requirements") or None,
+        # Bullets a person accepted after each rewrite was verified against
+        # cited master-resume evidence (src/resume/rewrites.js).
+        accepted_rewrites=request.get("accepted_rewrites") or None,
+        # Bullets the person pinned for this job: never omitted to fit the page.
+        keep_bullets=request.get("keep_bullets") or None,
     )
 
     pdf_path = None

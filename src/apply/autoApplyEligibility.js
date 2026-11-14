@@ -62,7 +62,7 @@ function unique(values) {
  * @returns {object} privacy-safe eligibility preview
  */
 export function evaluateAutoApplyEligibility({
-  job, approval = null, packet = null, autoSubmitAuthorized = false,
+  job, approval = null, packet = null, autoSubmitAuthorized = false, liveVerifiedAts = [],
 } = {}) {
   if (!job) {
     return {
@@ -118,6 +118,14 @@ export function evaluateAutoApplyEligibility({
   add('ats', VERIFIED_ATS.has(ats), 'ATS has a fixture-tested contract', VERIFIED_ATS.has(ats)
     ? `${ats} is covered by a local no-submit fixture.`
     : `ATS is ${ats}; final Auto-submit requires a supported contract, while assisted fill may need manual completion.`, true);
+
+  // Fixtures prove the filler on saved pages; only a supervised live run
+  // proves the vendor's real page and confirmation still match (P1-11).
+  const liveVerified = new Set([...(liveVerifiedAts ?? [])].map((x) => clean(x).toLowerCase())).has(ats);
+  add('ats_live', liveVerified, 'ATS verified on a live site', liveVerified
+    ? `${ats} has a recorded supervised live run (config/verified_live_ats.json).`
+    : `${ats} has no recorded supervised live run yet (config/verified_live_ats.json), so final Auto-submit is refused; `
+      + 'assisted fill still works and you submit yourself.', true);
 
   add('packet', Boolean(packet), 'Application packet exists', packet
     ? 'A prepared packet is available for review.'
@@ -178,9 +186,9 @@ export function evaluateAutoApplyEligibility({
 }
 
 /** Evaluate and summarize a batch without performing any mutation. */
-export function evaluateAutoApplyBatch({ items = [], autoSubmitAuthorized = false } = {}) {
+export function evaluateAutoApplyBatch({ items = [], autoSubmitAuthorized = false, liveVerifiedAts = [] } = {}) {
   const results = items.map((item) => evaluateAutoApplyEligibility({
-    ...item, autoSubmitAuthorized,
+    ...item, autoSubmitAuthorized, liveVerifiedAts,
   }));
   return {
     autoSubmitAuthorized,

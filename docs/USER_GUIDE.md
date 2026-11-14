@@ -878,7 +878,16 @@ npm run db:maintenance # checkpoint the SQLite WAL (+ --vacuum to compact; refus
 npm run db:prune       # dry run: descriptions of old discarded rows (+ --prune-events=<days> for diagnostics)
 npm run rescore        # re-judge stored rows under the current profile (no network)
 npm run tracker        # refresh the Excel tracker at data/job_tracker.csv
+npm run backup         # back up every job list now (also daily, automatically, in data/backups)
+npm run export         # everything personal in ONE file (exports/…jobagent); --passphrase-file=… encrypts it
+npm run import -- <file>          # show what an export would change; add --apply to import (backs up first)
+npm run dashboard:link # print the link that unlocks the running dashboard
+npm run secret -- set INBOX_IMAP_PASSWORD   # keep a password in the OS secret store, not .env
+npm run mcp            # MCP server on stdio (read tools + add a note + record an outcome; never submits)
+npm run scoring:calibrate         # propose weight changes from your outcomes (changes nothing; --apply to use)
+npm run licenses       # regenerate the npm license inventory
 npm test               # Node test suite (vitest)
+npm run test:coverage  # the same, with the coverage gate CI enforces
 npm run test:py        # Python test suite (pytest, needs `python` on PATH)
 ```
 
@@ -913,25 +922,32 @@ A `prepare-apps` run prints a `cover_letter_generated` and an `approval_required
 ## 🧠 Optional LLM assist
 
 > [!NOTE]
-> **Off by default.** Turn it on with `LLM_ASSIST=on` plus an API key, described in `.env.example`. It is deliberately confined to one narrow, verifiable job.
+> **Off by default, and every part is a separate opt-in.** Turn the layer on with `LLM_ASSIST=on` and a provider, described in `.env.example`. With it off, everything below is deterministic and no model is called.
 
-**The problem it solves.** The deterministic tailor can only recognize requirements that already appear in `config/scoring.json`'s keyword vocabulary. A posting asking for "dimensional modeling", "Iceberg", or "dbt exposures" surfaces nothing if those terms were never listed, so the resume never gets reordered to answer them and they never get reported as gaps. Hand-maintaining that vocabulary across every employer's phrasing does not scale.
+**Providers.** `LLM_PROVIDER` picks one: `openai` (any OpenAI-compatible server; the default, so an existing setup keeps working), `anthropic` (Claude, through the official SDK), or the local `ollama` and `lmstudio`. A local provider keeps everything on your computer. Every request is checked against a JSON schema, gets one repair attempt when the reply is malformed, and falls back to the deterministic path when it still is. Prompts are versioned (for example `rewrite-bullets@1`), the version is recorded with every result and is part of the cache key, and token counts (never content) go to `logs/llm-usage.jsonl` and to **Activity → System health**.
 
-**What it does.** The model reads the job description and proposes requirement phrases. That is all it does.
+**What it can do, each switched on separately:**
+
+| Feature | Switch | What is sent to the provider | How it is kept honest |
+| --- | --- | --- | --- |
+| Job requirement phrases | `LLM_ASSIST=on` | The posting and its title | Every phrase must appear **verbatim in the posting**; anything else is dropped |
+| Rewrite suggestions | `RESUME_REWRITE=suggest` | Your resume bullets and the requirement phrases | See below; you accept each one |
+| Grounded cover letters | `COVER_LETTER_MODE=grounded` | Your resume bullets, the company and role | Each paragraph is checked like a rewrite; fewer than two pass, the template is used |
+| Drafted email replies | `LLM_ASSIST=on` and `INBOX=imap` | Your bullets and one sentence of the email | Checked like a letter; never sent by JobAgent |
+| Reply classification | `LLM_ASSIST=on` and `INBOX=imap` | The email text | Only for mail the rules could not classify; kept only if its evidence is quoted verbatim |
 
 > [!IMPORTANT]
-> **Why it cannot fabricate.** Every proposed phrase is checked to occur **verbatim in that job description** before it gets accepted. A phrase the model invented cannot survive that check, so hallucination is blocked by the structure rather than just discouraged. Rejected phrases are counted and shown in the packet.
+> **Why rewrites and letters cannot invent experience.** The model must cite the resume lines it relies on. A deterministic checker (`src/resume/claimVerifier.js`) then refuses any suggestion with a number, tool, employer, product or certification that is not in the cited lines or your profile, any stronger claim of ownership ("contributed" never becomes "led"), any evidence borrowed from a different job, and any large change in length. **The job posting is never evidence:** a skill the posting asks for that your resume does not mention is refused, however natural it would sound. Refused suggestions are shown with the reason and cannot be accepted, and nothing reaches a resume until you accept it, after which the application goes back to review.
 
-**What it never touches.** It does not write, reword, or suggest resume prose. Accepted phrases go to the same deterministic tailor, which only reorders and emphasizes text already present in your master resume and reports everything else as an honest gap. Free-form resume rewriting stays disabled, and the module docstring in `src/resume/tailor.py` explains why.
+**Privacy boundary.** With only `LLM_ASSIST=on`, just the public posting is sent. Turning on rewrites, grounded letters or drafted replies also sends **your resume bullets** to the provider you chose. Your contact details, EEO answers and salary expectations are never sent. Use `ollama` or `lmstudio` to keep it all local.
 
-**Privacy boundary.** Only the public job description and title get sent. Your resume, contact details, EEO answers, and salary expectations are never transmitted.
-
-**Other guarantees.** It is never consulted on the auto-submit path. It runs deterministically at `temperature: 0` and gets cached by content hash, so re-preparing a job is free and its audit trail is reproducible. Disabled, offline, slow, or malformed responses all fall back quietly to the deterministic path.
+**Never on the submit path.** No model is consulted when an application is filled or submitted.
 
 | Layer | Who decides | Can it invent? |
 | --- | --- | --- |
-| JD requirement extraction | LLM proposes, grounding check verifies | **No.** Unverifiable phrases get dropped |
-| Resume content selection | Deterministic tailor | **No.** It only reorders existing text |
+| Requirement extraction | Model proposes, verbatim check verifies | **No.** Unverifiable phrases are dropped |
+| Rewrites and letters | Model proposes, claim checker verifies, **you** accept | **No.** Unbacked claims are refused |
+| Resume content selection | Deterministic tailor | **No.** It reorders existing text and applies only accepted rewrites |
 | Gap reporting | Deterministic tailor | **No.** It reports what is missing and adds nothing |
 | Screening answers | Your `config/screening_answers.json` | **No.** The LLM is not involved |
 | Final submit | **You** | n/a |

@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><head><title>Apply - Example Co</title></head><body>
+<header>
+  <label for="ui-lang">Display language</label>
+  <select id="ui-lang" name="displayLanguage">
+    <option value="en-US" selected>English</option><option value="es-ES">Español</option>
+  </select>
+</header>
+<h1>Apply: Senior Analytics Engineer</h1>
+<form onsubmit="return false">
+  <label for="fn">First name</label><input id="fn" name="firstName" required>
+  <label for="ln">Last name</label><input id="ln" name="lastName" required>
+  <label for="em">Email</label><input id="em" name="email" type="email" required>
+  <label for="cv">Resume</label><input id="cv" name="resume" type="file" required>
+  <label for="langs">What languages do you speak?</label>
+  <select id="langs" name="spokenLanguages"><option value="">Select</option><option>English</option><option>Spanish</option></select>
+  <button id="submit_app" type="button" onclick="window.__submitted=true">Submit application</button>
+</form>
+</body></html>

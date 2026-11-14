@@ -8,7 +8,8 @@ recruiter expects. This is a HONEST quality gate: it inspects the generated
 Checks performed:
   * the file exists and opens as a valid .docx
   * it has a reasonable amount of text (not blank, not truncated)
-  * it contains contact details (an email and/or phone number)
+  * it contains contact details (an email and/or phone number), in the body, a
+    page header or footer, or a text box
   * it has the core sections (experience, education, skills)
   * how many of the job's target keywords are actually present (coverage)
 
@@ -23,7 +24,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from keywordAudit import audit_keywords, read_docx_text
+from keywordAudit import audit_keywords, read_docx_contact_text, read_docx_text
 
 # Section header synonyms we look for (case-insensitive, word-ish match).
 SECTION_PATTERNS: Dict[str, List[str]] = {
@@ -106,8 +107,14 @@ def validate_resume(
     elif missing_sections:
         result["warnings"].append(f"resume is missing section(s): {', '.join(missing_sections)}")
 
-    result["has_email"] = bool(EMAIL_RE.search(text))
-    result["has_phone"] = bool(PHONE_RE.search(text))
+    # The contact line usually lives in the page header, which the body text never
+    # includes. A header that cannot be read must not turn into "no contact".
+    try:
+        contact_text = f"{text}\n{read_docx_contact_text(resume_path)}"
+    except Exception:  # noqa: BLE001 - fall back to the body, as before
+        contact_text = text
+    result["has_email"] = bool(EMAIL_RE.search(contact_text))
+    result["has_phone"] = bool(PHONE_RE.search(contact_text))
     if not result["has_email"] and not result["has_phone"]:
         result["issues"].append("resume has no contact details (no email or phone found)")
     elif not result["has_email"]:

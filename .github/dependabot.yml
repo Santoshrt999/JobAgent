@@ -1,0 +1,46 @@
+# Weekly dependency updates. Security updates are also enabled in the
+# repository settings and arrive as soon as an advisory is published.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Playwright drives the browser against live, untrusted pages: keep it on
+      # its own PR so a browser bump is reviewed and tested by itself.
+      playwright:
+        patterns: ['playwright', 'playwright-core', '@playwright/*']
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+        exclude-patterns: ['playwright', 'playwright-core', '@playwright/*']
+    # Major versions of other tools (TypeScript, vitest, ...) still arrive as
+    # their own PRs, to be reviewed one at a time.
+    ignore:
+      # Types must match the Node line JobAgent supports (package.json
+      # engines: Node 22), not the newest Node.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      pip-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Only the optional connectivity probe (scripts/llm-check.py) uses it;
+      # raising its minimum version changes nothing for anyone.
+      - dependency-name: 'openai'
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ['*']

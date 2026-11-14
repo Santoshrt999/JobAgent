@@ -290,13 +290,17 @@ export function uploadCheckpoint(upload = {}, { step, at } = {}) {
  * Re-entry from Blocked/Ready for Review is allowed: a resumed run performs a
  * fresh Precheck before opening the saved URL. Verified is terminal.
  */
-export function transitionApplicationState(state, nextPhase, patch = {}, { now, detail } = {}) {
+export function transitionApplicationState(state, nextPhase, patch = {}, { now, detail, humanRetraction = false } = {}) {
   validateApplicationState(state);
   if (!APPLICATION_PHASE_VALUES.includes(nextPhase)) throw new Error(`unknown application phase: ${nextPhase}`);
   if (state.phase === APPLICATION_PHASE.VERIFIED && nextPhase !== APPLICATION_PHASE.VERIFIED) {
     throw new Error('a verified application cannot transition to another phase');
   }
-  if (state.phase === APPLICATION_PHASE.USER_SUBMITTED
+  // The ONE way out of a reported-but-unverified submission: the person says
+  // it did not go through (retractApplicationSubmission). Never the pipeline.
+  const retracting = humanRetraction === true
+    && [APPLICATION_PHASE.READY_FOR_REVIEW, APPLICATION_PHASE.BLOCKED].includes(nextPhase);
+  if (state.phase === APPLICATION_PHASE.USER_SUBMITTED && !retracting
       && ![APPLICATION_PHASE.USER_SUBMITTED, APPLICATION_PHASE.VERIFIED].includes(nextPhase)) {
     throw new Error('a submitted application cannot be reopened before verification');
   }
@@ -353,6 +357,11 @@ export function transitionApplicationState(state, nextPhase, patch = {}, { now, 
     next.verifiedAt = state.verifiedAt ?? at;
     next.verificationEvidence = sanitizeEvidence(patch.verificationEvidence ?? state.verificationEvidence);
   }
+  if (retracting && TERMINAL_NO_REOPEN.has(state.phase)) {
+    // The reported submission is withdrawn, so is its evidence.
+    next.submittedAt = null;
+    next.submissionEvidence = [];
+  }
   validateApplicationState(next);
   return next;
 }
@@ -399,6 +408,33 @@ export async function markApplicationUserSubmitted({ store, statePath, root, pac
     submissionEvidence: evidence,
     blockers: [],
   }, { now, detail: 'human reported final submission' });
+  return saveStore(target, next);
+}
+
+/**
+ * The person says a reported submission did NOT go through. Moves the
+ * checkpoint from user_submitted / submitting / verifying back to a phase a
+ * fill may reopen, clearing the submission evidence. Without this, the
+ * dashboard's "No, it didn't" reset the job row while the checkpoint kept
+ * refusing to reopen, so every retry returned "awaits verification" without
+ * opening the form. A VERIFIED checkpoint is never retracted.
+ *
+ * @returns {Promise<object|null>} the new state, or null when there is no checkpoint
+ */
+export async function retractApplicationSubmission({ store, statePath, root, packet, now, toBlocked = false } = {}) {
+  const target = resolveApplicationStateStore({ packet, root, statePath, store });
+  if (!target) return null;
+  const state = await loadStore(target);
+  if (!state) return null;
+  if (packet) assertApplicationStateMatchesPacket(state, packet);
+  if (state.phase === APPLICATION_PHASE.VERIFIED) {
+    throw new Error('this application was verified as submitted, so it cannot be reopened');
+  }
+  if (!TERMINAL_NO_REOPEN.has(state.phase)) return state;
+  const next = transitionApplicationState(state, toBlocked ? APPLICATION_PHASE.BLOCKED : APPLICATION_PHASE.READY_FOR_REVIEW, {
+    submissionEvidence: [],
+    blockers: toBlocked ? ['submission not confirmed: you said it did not go through'] : [],
+  }, { now, detail: 'the person said the submission did not go through', humanRetraction: true });
   return saveStore(target, next);
 }
 

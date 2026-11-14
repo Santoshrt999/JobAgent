@@ -11,6 +11,7 @@
 import { parseJsonLdJobs, normalizeJob, htmlToText, extractReadableContent } from '../normalize.js';
 import { withRetry } from '../../utils/retryHandler.js';
 import { fetchWithTimeout, discoveryHeaders } from '../../utils/httpClient.js';
+import { safeFetch } from '../../utils/safeFetch.js';
 
 export const adapterId = 'genericPublicPage';
 
@@ -34,7 +35,7 @@ export const adapterId = 'genericPublicPage';
  * @returns {Promise<object[]>} normalized jobs
  */
 export async function fetchUrl(url, ctx = {}) {
-  const { fetchImpl = fetch, source = 'public', maxRetries = 3, requestTimeoutMs, hostGate } = ctx;
+  const { fetchImpl = safeFetch, source = 'public', maxRetries = 3, requestTimeoutMs, hostGate } = ctx;
   const call = async () => {
     const res = await fetchWithTimeout(
       fetchImpl,
@@ -119,7 +120,7 @@ function firstHeading(html) {
  * @returns {Promise<{ jobs: object[], errors: Array<{url: string, error: string}> }>}
  */
 export async function run(source = {}, ctx = {}) {
-  const { fetchImpl = fetch, rateLimiter, maxRetries = 3 } = ctx;
+  const { fetchImpl = safeFetch, rateLimiter, maxRetries = 3 } = ctx;
   const urls = Array.isArray(source.urls) ? source.urls : [];
   const jobs = [];
   const errors = [];

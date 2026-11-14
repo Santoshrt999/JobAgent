@@ -1,0 +1,368 @@
+/* Hallmark · macrostructure: bespoke "Signal" (a held stack of chapter sheets that peel over one another, the two human gates as railway signals)
+ * genre: editorial · theme: custom, bespoke depth · vibe: "wayfinding, transit signal, launch film, editorial serif"
+ * paper: oklch(97.5% 0.006 250) · ink: oklch(21% 0.03 262) · signal: oklch(63% 0.2 29)
+ * display: Instrument Serif (roman, 400), self-hosted · body and signage: Archivo variable (width 62 to 125) · outlier: system mono
+ * axes: mixed grounds per chapter / classical-serif + grotesk signage / chromatic-other (three line hues plus signal red)
+ * nav: N1b · footer: Ft5 statement · enrichment: Tier A CSS 3D cards, Tier B hand-built SVG and CSS diagrams
+ * pre-emit critique: P5 H5 E4 S5 R4 V5
+ */
+
+/*
+ * Explore JobAgent: design tokens.
+ *
+ * The page's identity is "The Line". JobAgent's workflows are drawn the way a
+ * transit diagram draws services: three line colours for the three things the
+ * product does (find, apply, track) and one signal red for the two places only
+ * a person can move things forward. Every colour and face used by explore.css
+ * is named here; nothing in that file states a raw value.
+ *
+ * Colour roles
+ *   paper / ink     the ground and the text, in three steps each
+ *   line-find       blue. Discovery and scoring.
+ *   line-apply      green. Tailoring and filling. Also "signal cleared".
+ *   line-track      magenta. What happens after you submit.
+ *   signal          red. A human gate, held until you clear it.
+ *   board           the dark panel of a departures board or a control diagram,
+ *                   dark in both themes because that is what the object is.
+ * The `-ink` variant of each line is the same hue at a lightness that clears
+ * 4.5:1 as text on paper.
+ *
+ * Shape rule: controls you press are pills. Surfaces and fields have a 4px
+ * corner. Nothing else.
+ */
+
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url("/assets/fonts/archivo-variable.woff2") format("woff2-variations"),
+       url("/assets/fonts/archivo-variable.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/instrument-serif-400.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  color-scheme: light;
+
+  --color-paper: oklch(97.5% 0.006 250);
+  --color-paper-2: oklch(94.5% 0.009 250);
+  --color-paper-3: oklch(90.5% 0.013 252);
+  --color-ink: oklch(21% 0.03 262);
+  --color-ink-2: oklch(38% 0.03 260);
+  --color-ink-3: oklch(48% 0.026 258);
+  --color-rule: oklch(86% 0.013 255);
+  --color-rule-strong: oklch(68% 0.022 256);
+  /* A sheet of paper lying on the page: a resume, a form, a panel. */
+  --color-sheet: oklch(99.6% 0.002 250);
+
+  --line-find: oklch(54% 0.2 258);
+  --line-find-ink: oklch(44% 0.19 258);
+  --line-apply: oklch(60% 0.16 155);
+  --line-apply-ink: oklch(40% 0.12 155);
+  --line-track: oklch(57% 0.22 352);
+  --line-track-ink: oklch(42% 0.19 352);
+  --line-control: oklch(60% 0.02 256);
+  --signal: oklch(58% 0.23 27);
+  --signal-ink: oklch(44% 0.19 27);
+
+  /* A tint of each line for fills behind ink text. */
+  --tint-find: color-mix(in oklab, var(--line-find) 11%, var(--color-paper));
+  --tint-apply: color-mix(in oklab, var(--line-apply) 14%, var(--color-paper));
+  --tint-track: color-mix(in oklab, var(--line-track) 10%, var(--color-paper));
+  --tint-signal: color-mix(in oklab, var(--signal) 10%, var(--color-paper));
+  /* Queue on the tier scale: the signal hue, quieter, because Queue means "yours to judge". */
+  --band-queue: color-mix(in oklab, var(--signal) 62%, var(--color-paper));
+
+  --color-board: oklch(19% 0.03 262);
+  --color-board-2: oklch(25% 0.032 262);
+  --color-board-rule: oklch(33% 0.03 262);
+  --color-board-ink: oklch(96% 0.008 250);
+  --color-board-dim: oklch(72% 0.02 256);
+  --board-find: oklch(72% 0.14 255);
+  --board-apply: oklch(78% 0.16 155);
+  --board-track: oklch(76% 0.16 352);
+  --board-signal: oklch(70% 0.2 27);
+  --board-control: oklch(62% 0.02 256);
+
+  /* The deep dive's ground: the same paper, a step toward drafting blue. */
+  --color-ground-deep: oklch(95.5% 0.014 252);
+
+  --color-focus: var(--line-find);
+  --color-on-ink: var(--color-paper);
+  --shadow-lift: 0 1px 0 oklch(21% 0.03 262 / .04), 0 12px 32px -12px oklch(21% 0.03 262 / .22);
+
+  --font-display: "Archivo", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  /* The voice of the Overview: a classical serif, set large and upright. */
+  --font-serif: "Instrument Serif", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --font-body: "Archivo", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", ui-monospace, Consolas, monospace;
+
+  /* Width is the expressive axis: wide for display, narrow for signage. */
+  --wdth-display: 112%;
+  --wdth-station: 125%;
+  --wdth-text: 100%;
+  --wdth-sign: 84%;
+
+  --text-xs: .75rem;
+  --text-sm: .875rem;
+  --text-md: 1rem;
+  --text-lg: 1.1875rem;
+  --text-xl: clamp(1.3rem, 1.1rem + .9vw, 1.7rem);
+  --text-2xl: clamp(1.7rem, 1.2rem + 2vw, 2.6rem);
+  --text-display-s: clamp(2rem, 1.1rem + 3.6vw, 3.6rem);
+  --text-display: clamp(2.3rem, .7rem + 5.8vw, 5.4rem);
+  --text-station: clamp(3.1rem, 1.1rem + 8.2vw, 8.25rem);
+
+  --space-3xs: .25rem;
+  --space-2xs: .5rem;
+  --space-xs: .75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4.5rem;
+  --space-3xl: 7rem;
+  --space-4xl: clamp(6rem, 3rem + 9vw, 11rem);
+
+  --radius-surface: 4px;
+  --radius-pill: 999px;
+  --rule-hair: 1px;
+  --rule-line: 6px;
+
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-in: cubic-bezier(.7, 0, .84, 0);
+  --ease-in-out: cubic-bezier(.77, 0, .175, 1);
+  --dur-press: 120ms;
+  --dur-short: 200ms;
+  --dur-move: 520ms;
+  --dur-travel: 900ms;
+  --radius-sheet: 28px;
+
+  --page-max: 78rem;
+  --page-pad: clamp(1rem, 4vw, 3rem);
+  --top-h: 60px;
+}
+
+/* Dark: the person chose it in the dashboard, or the system asks and they have not chosen. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-paper: oklch(17.5% 0.024 262);
+  --color-paper-2: oklch(21.5% 0.027 262);
+  --color-paper-3: oklch(26% 0.03 262);
+  --color-ink: oklch(95.5% 0.008 250);
+  --color-ink-2: oklch(80% 0.018 255);
+  --color-ink-3: oklch(70% 0.022 256);
+  --color-rule: oklch(31% 0.03 261);
+  --color-rule-strong: oklch(46% 0.032 260);
+  --color-sheet: oklch(22.5% 0.028 262);
+  --line-find: oklch(68% 0.17 256);
+  --line-find-ink: oklch(78% 0.12 255);
+  --line-apply: oklch(74% 0.17 155);
+  --line-apply-ink: oklch(81% 0.15 155);
+  --line-track: oklch(72% 0.19 352);
+  --line-track-ink: oklch(80% 0.14 352);
+  --line-control: oklch(58% 0.022 256);
+  --signal: oklch(66% 0.22 27);
+  --signal-ink: oklch(76% 0.16 27);
+  --tint-find: color-mix(in oklab, var(--line-find) 16%, var(--color-paper));
+  --tint-apply: color-mix(in oklab, var(--line-apply) 14%, var(--color-paper));
+  --tint-track: color-mix(in oklab, var(--line-track) 14%, var(--color-paper));
+  --tint-signal: color-mix(in oklab, var(--signal) 15%, var(--color-paper));
+  --color-board: oklch(12.5% 0.02 262);
+  --color-board-2: oklch(17% 0.024 262);
+  --color-board-rule: oklch(27% 0.028 262);
+  --color-ground-deep: oklch(15.5% 0.03 264);
+  --shadow-lift: 0 1px 0 oklch(0% 0 0 / .3), 0 16px 36px -14px oklch(0% 0 0 / .6);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --color-paper: oklch(17.5% 0.024 262);
+    --color-paper-2: oklch(21.5% 0.027 262);
+    --color-paper-3: oklch(26% 0.03 262);
+    --color-ink: oklch(95.5% 0.008 250);
+    --color-ink-2: oklch(80% 0.018 255);
+    --color-ink-3: oklch(70% 0.022 256);
+    --color-rule: oklch(31% 0.03 261);
+    --color-rule-strong: oklch(46% 0.032 260);
+    --color-sheet: oklch(22.5% 0.028 262);
+    --line-find: oklch(68% 0.17 256);
+    --line-find-ink: oklch(78% 0.12 255);
+    --line-apply: oklch(74% 0.17 155);
+    --line-apply-ink: oklch(81% 0.15 155);
+    --line-track: oklch(72% 0.19 352);
+    --line-track-ink: oklch(80% 0.14 352);
+    --line-control: oklch(58% 0.022 256);
+    --signal: oklch(66% 0.22 27);
+    --signal-ink: oklch(76% 0.16 27);
+    --tint-find: color-mix(in oklab, var(--line-find) 16%, var(--color-paper));
+    --tint-apply: color-mix(in oklab, var(--line-apply) 14%, var(--color-paper));
+    --tint-track: color-mix(in oklab, var(--line-track) 14%, var(--color-paper));
+    --tint-signal: color-mix(in oklab, var(--signal) 15%, var(--color-paper));
+    --color-board: oklch(12.5% 0.02 262);
+    --color-board-2: oklch(17% 0.024 262);
+    --color-board-rule: oklch(27% 0.028 262);
+    --color-ground-deep: oklch(15.5% 0.03 264);
+    --shadow-lift: 0 1px 0 oklch(0% 0 0 / .3), 0 16px 36px -14px oklch(0% 0 0 / .6);
+  }
+}
+
+/*
+ * Grounds: the art-directed sheets of the Overview's chapters.
+ *
+ * Each chapter is played on a sheet of its own colour, the same in both
+ * themes (the way a printed film poster does not change with the room's
+ * lights). A ground restates every ink, rule and line token for itself, so a
+ * picture placed on it needs no colour of its own. The tints are restated
+ * here too: a custom property that mixes another resolves where it is
+ * declared, so each ground mixes its own paper.
+ *
+ *   night   Discover. The dark of a departures board.
+ *   ivory   Score. A sheet of paper with a number on it.
+ *   forest  Tailor. Green, the Apply line, deep.
+ *   signal  The two human gates. Red, with the signal head in black.
+ *   mist    Fill. The pale grey of a form.
+ *   plum    Track. The Track line, deep.
+ *   ink     Never. Near black.
+ */
+[data-ground] {
+  --tint-find: color-mix(in oklab, var(--line-find) 14%, var(--color-paper));
+  --tint-apply: color-mix(in oklab, var(--line-apply) 16%, var(--color-paper));
+  --tint-track: color-mix(in oklab, var(--line-track) 14%, var(--color-paper));
+  --tint-signal: color-mix(in oklab, var(--signal) 14%, var(--color-paper));
+  --band-queue: color-mix(in oklab, var(--signal) 62%, var(--color-paper));
+  --color-on-ink: var(--color-paper);
+  --page-bg: var(--color-paper);
+  color: var(--color-ink);
+}
+
+/* Dark grounds share the dark theme's line colours. */
+[data-ground="night"], [data-ground="forest"], [data-ground="plum"], [data-ground="ink"] {
+  color-scheme: dark;
+  --color-ink: oklch(96.5% 0.008 250);
+  --line-find: oklch(70% 0.16 254);
+  --line-find-ink: oklch(80% 0.11 252);
+  --line-apply: oklch(76% 0.16 156);
+  --line-apply-ink: oklch(84% 0.13 156);
+  --line-track: oklch(74% 0.17 350);
+  --line-track-ink: oklch(83% 0.12 350);
+  --signal: oklch(68% 0.21 29);
+  --signal-ink: oklch(78% 0.15 29);
+  --line-control: oklch(60% 0.02 256);
+  --shadow-lift: 0 1px 0 oklch(0% 0 0 / .35), 0 24px 48px -20px oklch(0% 0 0 / .7);
+}
+/* Light grounds share the light theme's. */
+[data-ground="ivory"], [data-ground="mist"] {
+  color-scheme: light;
+  --color-ink: oklch(19% 0.028 264);
+  --line-find: oklch(53% 0.2 258);
+  --line-find-ink: oklch(43% 0.19 258);
+  --line-apply: oklch(58% 0.16 155);
+  --line-apply-ink: oklch(39% 0.12 155);
+  --line-track: oklch(56% 0.22 352);
+  --line-track-ink: oklch(41% 0.19 352);
+  --signal: oklch(57% 0.23 27);
+  --signal-ink: oklch(44% 0.19 27);
+  --line-control: oklch(58% 0.02 256);
+  --shadow-lift: 0 1px 0 oklch(21% 0.03 262 / .05), 0 22px 44px -22px oklch(21% 0.03 262 / .32);
+}
+
+[data-ground="night"] {
+  --color-paper: oklch(16.5% 0.03 262);
+  --color-paper-2: oklch(20.5% 0.032 262);
+  --color-paper-3: oklch(27% 0.034 262);
+  --color-sheet: oklch(21.5% 0.034 262);
+  --color-ink-2: oklch(81% 0.02 255);
+  --color-ink-3: oklch(73% 0.022 256);
+  --color-rule: oklch(30% 0.032 262);
+  --color-rule-strong: oklch(44% 0.034 260);
+  --line: var(--line-find); --line-ink: var(--line-find-ink);
+}
+[data-ground="ivory"] {
+  --color-paper: oklch(95.8% 0.016 84);
+  --color-paper-2: oklch(92.5% 0.02 84);
+  --color-paper-3: oklch(88.5% 0.022 82);
+  --color-sheet: oklch(99.2% 0.006 84);
+  --color-ink-2: oklch(35% 0.026 262);
+  --color-ink-3: oklch(44% 0.024 260);
+  --color-rule: oklch(85% 0.02 82);
+  --color-rule-strong: oklch(64% 0.024 78);
+  --line: var(--line-find); --line-ink: var(--line-find-ink);
+}
+[data-ground="forest"] {
+  --color-paper: oklch(29% 0.06 166);
+  --color-paper-2: oklch(33% 0.064 166);
+  --color-paper-3: oklch(39% 0.066 166);
+  --color-sheet: oklch(33.5% 0.062 166);
+  --color-ink-2: oklch(86% 0.03 160);
+  --color-ink-3: oklch(79% 0.036 162);
+  --color-rule: oklch(40% 0.06 166);
+  --color-rule-strong: oklch(54% 0.06 166);
+  --line: var(--line-apply); --line-ink: var(--line-apply-ink);
+}
+[data-ground="mist"] {
+  --color-paper: oklch(93.8% 0.014 236);
+  --color-paper-2: oklch(90.5% 0.018 236);
+  --color-paper-3: oklch(86.5% 0.02 236);
+  --color-sheet: oklch(99% 0.004 236);
+  --color-ink-2: oklch(35% 0.03 250);
+  --color-ink-3: oklch(44% 0.028 250);
+  --color-rule: oklch(84% 0.018 236);
+  --color-rule-strong: oklch(63% 0.024 240);
+  --line: var(--line-apply); --line-ink: var(--line-apply-ink);
+}
+[data-ground="plum"] {
+  --color-paper: oklch(25.5% 0.06 342);
+  --color-paper-2: oklch(29.5% 0.064 342);
+  --color-paper-3: oklch(35.5% 0.066 342);
+  --color-sheet: oklch(30% 0.064 342);
+  --color-ink-2: oklch(86% 0.03 345);
+  --color-ink-3: oklch(79% 0.036 345);
+  --color-rule: oklch(37% 0.06 342);
+  --color-rule-strong: oklch(51% 0.06 342);
+  --line: var(--line-track); --line-ink: var(--line-track-ink);
+}
+[data-ground="ink"] {
+  --color-paper: oklch(12.5% 0.016 265);
+  --color-paper-2: oklch(17% 0.02 265);
+  --color-paper-3: oklch(23% 0.024 265);
+  --color-sheet: oklch(17% 0.02 265);
+  --color-ink-2: oklch(80% 0.016 255);
+  --color-ink-3: oklch(72% 0.018 256);
+  --color-rule: oklch(27% 0.024 265);
+  --color-rule-strong: oklch(40% 0.026 262);
+  --line: var(--signal); --line-ink: var(--signal-ink);
+}
+/* A gate: the ground is the signal itself, and the ink is near black. The
+   lamps sit in a black signal head, so they read on the red. */
+[data-ground="signal"] {
+  color-scheme: light;
+  --color-paper: oklch(63% 0.2 29);
+  --color-paper-2: oklch(58% 0.2 29);
+  --color-paper-3: oklch(54% 0.19 29);
+  --color-sheet: oklch(66% 0.19 29);
+  --color-ink: oklch(15.5% 0.04 29);
+  --color-ink-2: oklch(22% 0.06 29);
+  --color-ink-3: oklch(25% 0.07 29);
+  --color-rule: oklch(52% 0.18 29);
+  --color-rule-strong: oklch(30% 0.1 29);
+  --signal-head: oklch(14% 0.02 29);
+  --lamp-stop: oklch(72% 0.22 33);
+  --lamp-clear: oklch(82% 0.2 150);
+  --lamp-off: oklch(26% 0.03 29);
+  --line: var(--color-ink); --line-ink: var(--color-ink);
+  --color-focus: var(--color-ink);
+}

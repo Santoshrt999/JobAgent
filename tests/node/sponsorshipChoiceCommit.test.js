@@ -24,12 +24,12 @@ function comboboxPage(options, { keyboard = true } = {}) {
     calls,
     keyboard: keyboard ? { press: async (key) => { calls.push({ action: 'press', key }); } } : undefined,
     locator: (selector) => ({
-      count: async () => (selector === '#sponsor' ? 1 : selector === '[role="option"]' ? options.length : 0),
+      count: async () => (selector === '#sponsor' ? 1 : selector.endsWith('[role="option"]') ? options.length : 0),
       first: () => ({
         click: async () => calls.push({ selector, action: 'click' }),
         fill: async (value) => calls.push({ selector, action: 'fill', value }),
       }),
-      allTextContents: async () => (selector === '[role="option"]' ? options : []),
+      allTextContents: async () => (selector.endsWith('[role="option"]') ? options : []),
       nth: (i) => ({ click: async () => calls.push({ action: 'optionClick', text: options[i] }) }),
     }),
   };
@@ -49,10 +49,19 @@ describe('sensitive typeahead commits', () => {
     expect(page.calls.some((c) => c.action === 'press')).toBe(false);
   });
 
-  it('still auto-picks the top result for an ordinary short value', async () => {
+  it('still auto-picks the top result for an ordinary short value inside the field\'s own list', async () => {
+    const page = comboboxPage(['Durham, North Carolina, United States']);
+    const res = await applyValue(page, {
+      kind: 'combobox', selector: '#sponsor', label: 'Location (City)', listboxSelector: '#sponsor-list',
+    }, 'Durhm');
+    expect(res).toMatchObject({ ok: true, chosen: 'Durham, North Carolina, United States' });
+  });
+
+  it('never trusts a top result found outside the field\'s own list (audit AF-05)', async () => {
     const page = comboboxPage(['Durham, North Carolina, United States']);
     const res = await applyValue(page, { kind: 'combobox', selector: '#sponsor', label: 'Location (City)' }, 'Durhm');
-    expect(res).toMatchObject({ ok: true, chosen: 'Durham, North Carolina, United States' });
+    expect(res.ok).toBe(false);
+    expect(page.calls.some((c) => c.action === 'optionClick')).toBe(false);
   });
 
   it('classifies legal, immigration and EEO labels as sensitive', () => {

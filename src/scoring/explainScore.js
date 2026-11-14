@@ -53,10 +53,25 @@ export function explainScore(scoreResult, scoring, {
     sponsorshipGated = true;
   }
 
+  // A posting whose stated floor the candidate does not meet (years far short,
+  // a degree, a licence, a clearance), or whose advanced degree floor the
+  // profile cannot answer, is not one to apply to on fit alone. Fit points
+  // could carry it to Priority: an 8-point penalty against a 90 changes the
+  // order inside a tier, not the tier. It stays visible, in Queue, with the
+  // reason, for the person to judge.
+  const elig = scoreResult.eligibility ?? {};
+  let eligibilityCapped = false;
+  if ((tier === TIERS.PRIORITY || tier === TIERS.APPLY) && (elig.verdict === 'ineligible' || elig.advancedUnknown === true)) {
+    tier = TIERS.QUEUE;
+    eligibilityCapped = true;
+  }
+
   return {
     tier,
     sponsorshipGated,
-    explanation: buildExplanation(scoreResult, tier, { sponsorshipGated, sponsorshipOk }),
+    eligibilityCapped,
+    explanation: buildExplanation(scoreResult, tier, { sponsorshipGated, sponsorshipOk })
+      + (eligibilityCapped ? ` ${ELIGIBILITY_HOLD} ${(elig.reasons ?? [])[0] ?? 'a stated requirement is not met'}.` : ''),
   };
 }
 
@@ -109,8 +124,14 @@ export function isSponsorshipGated(job = {}, { threshold, scoring } = {}) {
   return job.tier === TIERS.QUEUE
     && job.sponsorship !== 'Denied'
     && typeof job.score === 'number'
-    && job.score >= resolveApplyThreshold({ threshold, scoring });
+    && job.score >= resolveApplyThreshold({ threshold, scoring })
+    // The eligibility cap also holds an Apply-scoring row in Queue; its
+    // explanation says so, and it is not a sponsorship question.
+    && !String(job.explanation ?? '').includes(ELIGIBILITY_HOLD);
 }
+
+/** Marker the eligibility cap writes into a row's explanation. */
+export const ELIGIBILITY_HOLD = 'Held at Queue:';
 
 /**
  * The Apply threshold for a gate check: an explicit `threshold`, else the
@@ -192,6 +213,11 @@ function buildExplanation(scoreResult, tier, { sponsorshipGated }) {
     parts.push(pay.points < 0
       ? `Pay: ${pay.matched?.[0] ?? 'below target'} (${pay.points} pts).`
       : `Pay: ${pay.matched?.[0] ?? 'meets target'}.`);
+  }
+  // Track (people manager vs IC) is penalty-only as well.
+  const track = breakdown?.trackFit;
+  if (track && track.points < 0) {
+    parts.push(`Track: ${track.matched?.[0] ?? 'different track'} (${track.points} pts).`);
   }
   // Eligibility is penalty-only too, and the reason matters more than the
   // points: "requires 10+ years" is what a reader needs before applying.

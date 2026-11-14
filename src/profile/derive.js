@@ -355,7 +355,7 @@ const DERIVED_ANSWER_SPECS = [
   {
     id: 'require_sponsorship',
     patterns: [
-      'require sponsorship', 'need sponsorship', 'visa sponsorship', 'will you require',
+      'require sponsorship', 'need sponsorship', 'visa sponsorship',
       'now or in the future require sponsorship', 'sponsor you for a visa',
       'need an employer to sponsor', 'employer to sponsor you',
       'require an employer to sponsor', 'sponsorship to work',
@@ -417,7 +417,7 @@ const DERIVED_ANSWER_SPECS = [
   },
   {
     id: 'years_experience',
-    patterns: ['years of experience', 'how many years', 'total experience'],
+    patterns: ['years of experience', 'total experience'],
     answer: (p) => {
       const years = p.background.yearsExperience;
       return Number.isFinite(years) && years > 0 ? `${years}+ years` : null;

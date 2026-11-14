@@ -12,6 +12,7 @@
  */
 
 import { dedupKey } from '../utils/textNormalize.js';
+import { displayCompany } from '../utils/companyName.js';
 
 /**
  * Coerce a raw partial job into the canonical normalized shape.
@@ -32,8 +33,11 @@ export function normalizeJob(raw = {}) {
     employmentType: str(raw.employmentType),
     rawMetadata: raw.rawMetadata && typeof raw.rawMetadata === 'object' ? raw.rawMetadata : {},
   };
-  // Stable id used as the SQLite primary key.
+  // Stable id used as the SQLite primary key. Computed from the name AS THE
+  // SOURCE GAVE IT, before the display name below, so showing "Shield AI" for
+  // the board token "shieldai" never re-keys a job already in the database.
   job.id = raw.id ? str(raw.id) : makeJobId(job);
+  job.company = displayCompany(job.company);
   return job;
 }
 

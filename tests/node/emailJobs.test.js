@@ -137,7 +137,9 @@ describe('the dialog as shipped', () => {
   it('is reachable from the board and from Activity, and wired to its actions', () => {
     const pagerbar = html.slice(html.indexOf('<div class="pagerbar">'), html.indexOf('</div>', html.indexOf('id="viewMenu"')));
     expect(pagerbar).toContain('data-action="open-email-jobs"');
-    const activity = html.slice(html.indexOf('id="activityMenu"'), html.indexOf('</span>', html.indexOf('id="activityMenu"')));
+    // To the menu's own closing tag: its items carry <span> hints, so the
+    // first </span> is not the end of the menu.
+    const activity = html.slice(html.indexOf('id="activityMenu"'), html.indexOf('\n      </div>', html.indexOf('id="activityMenu"')));
     expect(activity).toContain('data-action="open-email-jobs"');
     const actions = js('actions.js');
     for (const name of ['open-email-jobs', 'email-copy', 'email-open', 'email-download']) {
@@ -177,6 +179,7 @@ describe('the dialog as shipped', () => {
   });
 
   it('is announced in the changelog', () => {
-    expect(JSON.stringify(CHANGELOG[0])).toMatch(/Email list/);
+    // Announced in the release that shipped it (2026-11-10), not necessarily the newest one.
+    expect(CHANGELOG.some((release) => /Email list/.test(JSON.stringify(release)))).toBe(true);
   });
 });
